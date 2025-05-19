@@ -1,11 +1,17 @@
 pipeline {
-    agent any
+    agent {
+        docker {
+            image 'ubuntu:20.04' // Or another suitable Ubuntu base
+            args '-u root'        // This will run commands inside this container as root
+        }
+    }
 
     stages {
         stage('Setup QEMU and OpenBMC') {
             steps {
                 sh '''
                 apt-get update && apt-get install -y qemu-system-arm unzip wget
+                # ... rest of your script for this stage (no sudo needed here)
                 wget -O romulus.zip "https://jenkins.openbmc.org/job/ci-openbmc/lastSuccessfulBuild/distro=ubuntu,label=docker-builder,target=romulus/artifact/openbmc/build/tmp/deploy/images/romulus/*zip*/romulus.zip" || { echo "Download failed"; exit 1; }
                 unzip -o romulus.zip
                 qemu-system-arm -m 256 -M romulus-bmc -nographic \
@@ -34,7 +40,7 @@ pipeline {
         stage('Run WebUI Tests') {
             steps {
                 sh '''
-                apt-get install -y chromium-driver
+                apt-get install -y chromium-driver  # No sudo needed due to -u root
                 pip install selenium selenium-wire html-testrunner
                 python3 openbmc_auth_tests.py
                 '''
