@@ -11,13 +11,31 @@ pipeline {
             steps {
                 sh '''
                 apt-get update && apt-get install -y qemu-system-arm unzip wget
-                # ... rest of your script for this stage (no sudo needed here)
                 wget -O romulus.zip "https://jenkins.openbmc.org/job/ci-openbmc/lastSuccessfulBuild/distro=ubuntu,label=docker-builder,target=romulus/artifact/openbmc/build/tmp/deploy/images/romulus/*zip*/romulus.zip" || { echo "Download failed"; exit 1; }
                 unzip -o romulus.zip
+                # Find the exact image file
+                IMAGE_FILE=$(ls romulus/obmc-phosphor-image-romulus-*.static.mtd | head -n 1)
+                if [ -z "$IMAGE_FILE" ]; then
+                    echo "Error: No image file found matching romulus/obmc-phosphor-image-romulus-*.static.mtd"
+                    exit 1
+                fi
+                # Run QEMU with the resolved file path
                 qemu-system-arm -m 256 -M romulus-bmc -nographic \
-                    -drive file=romulus/obmc-phosphor-image-romulus-*.static.mtd,format=raw,if=mtd \
+                    -drive file="$IMAGE_FILE",format=raw,if=mtd \
                     -net nic -net user,hostfwd=tcp::2222-:22,hostfwd=tcp::2443-:443,hostfwd=udp::2623-:623,hostname=qemu &
-                sleep 30
+                # Wait for QEMU to be ready (check if port 2443 is open)
+                for i in {1..60}; do
+                    if nc -z localhost 2443; then
+                        echo "QEMU is ready"
+                        break
+                    fi
+                    echo "Waiting for QEMU to start..."
+                    sleep 1
+                done
+                if ! nc -z localhost 2443; then
+                    echo "Error: QEMU failed to start within 60 seconds"
+                    exit 1
+                fi
                 '''
             }
         }
