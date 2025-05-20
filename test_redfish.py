@@ -19,7 +19,7 @@ def session_token():
             AUTH_URL,
             json=CREDENTIALS,
             headers={"Content-Type": "application/json"},
-            timeout=5,
+            timeout=30,
             verify=False
         )
         response.raise_for_status()
@@ -40,7 +40,7 @@ def test_authentication():
             AUTH_URL,
             json=CREDENTIALS,
             headers={"Content-Type": "application/json"},
-            timeout=5,
+            timeout=30,
             verify=False
         )
         assert response.status_code in (200, 201), f"Expected status 200 or 201, got {response.status_code}. Response: {response.text}"
@@ -55,7 +55,7 @@ def test_get_system_info(session_token):
     logger.info("Running system information test")
     headers = {"X-Auth-Token": session_token}
     try:
-        response = requests.get(SYSTEM_URL, headers=headers, timeout=5, verify=False)
+        response = requests.get(SYSTEM_URL, headers=headers, timeout=30, verify=False)
         assert response.status_code == 200, f"Expected status 200, got {response.status_code}. Response: {response.text}"
         data = response.json()
         assert "Status" in data, "Status field missing in response"
@@ -70,14 +70,14 @@ def test_power_management(session_token):
     logger.info("Running power management test")
     headers = {"X-Auth-Token": session_token}
     try:
-        initial_response = requests.get(SYSTEM_URL, headers=headers, timeout=5, verify=False)
+        initial_response = requests.get(SYSTEM_URL, headers=headers, timeout=30, verify=False)
         assert initial_response.status_code == 200, f"Expected status 200, got {initial_response.status_code}. Response: {initial_response.text}"
 
         reset_response = requests.post(
             RESET_URL,
             json={"ResetType": "On"},
             headers=headers,
-            timeout=5,
+            timeout=30,
             verify=False
         )
         assert reset_response.status_code in (200, 202, 204), f"Expected status 200/202/204, got {reset_response.status_code}. Response: {reset_response.text}"
@@ -85,7 +85,7 @@ def test_power_management(session_token):
         import time
         time.sleep(5)
 
-        updated_response = requests.get(SYSTEM_URL, headers=headers, timeout=5, verify=False)
+        updated_response = requests.get(SYSTEM_URL, headers=headers, timeout=30, verify=False)
         assert updated_response.status_code == 200, f"Expected status 200, got {updated_response.status_code}. Response: {updated_response.text}"
         power_state = updated_response.json().get("PowerState")
         assert power_state in ("On", "PoweringOn"), f"PowerState should be On or PoweringOn after reset. Got: {power_state}. Response: {updated_response.json()}"
