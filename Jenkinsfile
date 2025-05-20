@@ -1,82 +1,131 @@
 pipeline {
-    agent {
-        docker {
-            image 'ubuntu:20.04'
-            args '-u root'
-        }
+    agent any // Runs on any available agent/executor. For more complex needs, you might specify a Docker agent.
+
+    environment {
+        QEMU_PID = ''
+        OPENBMC_IMAGE_PATH = 'openbmc/build/tmp/deploy/images/romulus/obmc-phosphor-image-romulus-xxxxxxxxxxxxxx.static.mtd' // Adjust with your actual image path from Lab 1 [cite: 4]
+        ROMULUS_FILES_PATH = 'romulus' // Path to the directory containing the unzipped romulus files [cite: 4]
+        PYTHON_VENV = 'venv_jenkins'
     }
 
     stages {
-        stage('Setup QEMU and OpenBMC') {
+        stage('Checkout SCM') {
+            steps {
+                git credentialsId: 'your-github-credentials-id', url: 'your-github-repo-url' // Configure credentials in Jenkins
+                sh 'ls -la' // Verify checkout
+            }
+        }
+
+        stage('Setup Environment') {
             steps {
                 sh '''
-                # Find the latest OpenBMC image file
-                IMAGE_FILE=$(ls romulus/obmc-phosphor-image-romulus-*.static.mtd | sort -V | tail -n 1)
-                
-                # Run QEMU with a newline to bypass the U-Boot prompt
-                (echo -e "\\n" | qemu-system-arm -m 1024 -M romulus-bmc -nographic \
-                    -drive file="$IMAGE_FILE",format=raw,if=mtd \
-                    -net nic -net user,hostfwd=tcp::2222-:22,hostfwd=tcp::2443-:443,hostfwd=udp::2623-:623,hostname=qemu \
-                    > qemu_stdout.log 2> qemu_stderr.log) &
-                
-                # Wait for the system to boot (adjust sleep as needed)
-                sleep 30
-                
-                # Check if Redfish service is up (port 2443)
-                if ! nc -z localhost 2443; then
-                    echo "Error: Redfish service not running!"
-                    exit 1
-                fi
+                    sudo apt-get update && sudo apt-get install -y qemu-system-arm python3-venv python3-pip net-tools ipmitool
+                    python3 -m venv ${PYTHON_VENV}
+                    . ${PYTHON_VENV}/bin/activate
+                    pip install pytest requests selenium selenium-wire locust psutil
+                    # Download WebDriver if not already in repo (ensure it's executable)
+                    # Example for ChromeDriver:
+                    # wget https://storage.googleapis.com/chrome-for-testing-public/.../linux64/chromedriver-linux64.zip -O chromedriver.zip
+                    # unzip chromedriver.zip
+                    # sudo mv chromedriver-linux64/chromedriver /usr/local/bin/
+                    # Ensure your Selenium scripts point to the correct WebDriver path or it's in PATH
                 '''
             }
         }
 
-        stage('Run Redfish Autotests') {
+        stage('Start QEMU with OpenBMC') {
             steps {
-                sh '''
-                export PATH=$PATH:/root/.local/bin
-                python3 -m pip install --user pytest requests
-                mkdir -p reports
-                python3 -m pytest test_redfish.py --junitxml=reports/autotests.xml || true
-                '''
-            }
-            post {
-                always {
-                    junit allowEmptyResults: true, testResults: 'reports/autotests.xml'
+                script {
+                    // Ensure the OpenBMC image from Lab 1 is available at the correct path [cite: 4]
+                    // Make sure the 'romulus' directory from unzipping romulus.zip is present [cite: 4]
+                    sh '''
+                        set +e # Don't exit immediately on error for this block
+                        # Check if QEMU is already running from a previous build on the same executor
+                        pgrep -f "qemu-system-arm -M romulus-bmc" && echo "QEMU already running?" && exit 1
+
+                        echo "Starting QEMU with OpenBMC..."
+                        nohup qemu-system-arm \\
+                            -m 256 \\
+                            -M romulus-bmc \\
+                            -nographic \\
+                            -drive file=${env.OPENBMC_IMAGE_PATH},format=raw,if=mtd \\
+                            -net nic \\
+                            -net user,hostfwd=tcp::2222-:22,hostfwd=tcp::2443-:443,hostfwd=udp::2623-:623,hostname=qemu \\
+                            > qemu_openbmc.log 2>&1 &
+                        QEMU_PID=$!
+                        echo "QEMU started with PID ${QEMU_PID}"
+                        sleep 60 # Give OpenBMC time to boot
+                        # Verify OpenBMC is responding (e.g. ping or curl if possible, or just assume it's up)
+                        # For example, trying an IPMI command like in Lab 1 [cite: 5]
+                        ipmitool -I lanplus -H 127.0.0.1 -p 2623 -U root -P 0penBmc chassis power status
+                        if [ $? -ne 0 ]; then
+                            echo "OpenBMC did not start correctly."
+                            # Try to kill the QEMU process if it's the one we started
+                            kill ${QEMU_PID} || echo "Failed to kill QEMU PID ${QEMU_PID}, or it wasn't running."
+                            exit 1
+                        fi
+                        set -e
+                    '''
                 }
             }
         }
 
-        stage('Run WebUI Tests') {
+        stage('Run API Autotests (PyTest)') {
             steps {
                 sh '''
-                apt-get install -y chromium-chromedriver xvfb
-                python3 -m pip install --user selenium==4.27.1 selenium-wire==5.1.0 blinker==1.6.2 html-testrunner pyvirtualdisplay
-                export PATH=$PATH:/root/.local/bin
-                Xvfb :99 -screen 0 1280x1024x24 &
-                export DISPLAY=:99
-                python3 openbmc_auth_tests.py || true
+                    . ${PYTHON_VENV}/bin/activate
+                    # Assuming your pytest tests from Lab 5 are in a 'tests/api' directory [cite: 145]
+                    # and your test file is test_redfish.py [cite: 147]
+                    pytest tests/api/test_redfish.py --junitxml=pytest_api_report.xml || echo "PyTest API tests failed"
                 '''
             }
             post {
                 always {
-                    archiveArtifacts artifacts: 'reports/webui_test_report.html', allowEmptyArchive: true
+                    archiveArtifacts artifacts: 'pytest_api_report.xml, qemu_openbmc.log', fingerprint: true
+                    junit 'pytest_api_report.xml'
                 }
             }
         }
 
-        stage('Run Load Tests') {
+        stage('Run WebUI Autotests (Selenium)') {
             steps {
                 sh '''
-                export PATH=$PATH:/root/.local/bin
-                python3 -m pip install --user locust
-                mkdir -p reports
-                locust -f locustfile.py --headless --users 10 --spawn-rate 2 --run-time 1m --html reports/load_test.html || true
+                    . ${PYTHON_VENV}/bin/activate
+                    # Assuming your Selenium tests from Lab 4 are in 'tests/webui' [cite: 108]
+                    # and your test file is openbmc_auth_tests.py [cite: 129, 130, 131, 132, 133, 134]
+                    # Ensure chromedriver is in PATH or its path is configured in your Selenium script
+                    # For headless operation, your Selenium script needs to be configured for it.
+                    # Your script uses chrome_options.add_argument('--headless') but it's commented out[cite: 129].
+                    # Uncomment it or ensure it's set for CI.
+                    python tests/webui/openbmc_auth_tests.py || echo "Selenium WebUI tests failed"
+                    # If your tests generate a report (e.g., XML), refer to it here.
+                    # For now, we'll assume pass/fail is based on exit code.
                 '''
             }
             post {
                 always {
-                    archiveArtifacts artifacts: 'reports/load_test.html', allowEmptyArchive: true
+                    // Archive any logs or reports generated by Selenium tests.
+                    // For example, if you modify your script to output a log:
+                    // archiveArtifacts artifacts: 'selenium_report.log, qemu_openbmc.log', fingerprint: true
+                    // If using unittest and want JUnit compatible reports, you might need a test runner like xmlrunner
+                }
+            }
+        }
+
+        stage('Run Load Testing (Locust)') {
+            steps {
+                sh '''
+                    . ${PYTHON_VENV}/bin/activate
+                    # Assuming your Locust file from Lab 6 is locustfile.py in 'tests/load' [cite: 165, 167, 168, 169]
+                    echo "Starting Locust load test..."
+                    # Run Locust in headless mode for a short duration for CI
+                    locust -f tests/load/locustfile.py --headless -u 10 -r 2 -t 30s --host=https://localhost:2443 --csv=locust_report --html=locust_report.html || echo "Locust load test execution had issues"
+                    # The command above runs for 30 seconds with 10 users, spawn rate 2. Adjust as needed.
+                '''
+            }
+            post {
+                always {
+                    archiveArtifacts artifacts: 'locust_report_stats.csv, locust_report_stats_history.csv, locust_report.html, qemu_openbmc.log', fingerprint: true
                 }
             }
         }
@@ -84,13 +133,15 @@ pipeline {
 
     post {
         always {
-            sh '''
-            echo "Attempting to stop QEMU process..."
-            pkill -f qemu-system-arm || true
-            sleep 5
-            pkill -9 -f qemu-system-arm || true
-            echo "QEMU cleanup completed."
-            '''
+            script {
+                sh '''
+                    echo "Pipeline finished. Cleaning up QEMU..."
+                    # Attempt to find and kill the QEMU process started by this pipeline
+                    # This is a simple approach; more robust solutions might involve tracking the exact PID
+                    pgrep -f "qemu-system-arm -M romulus-bmc" | xargs --no-run-if-empty sudo kill -9
+                    echo "Cleanup attempt finished."
+                '''
+            }
         }
     }
 }
