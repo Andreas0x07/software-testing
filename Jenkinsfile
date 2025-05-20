@@ -4,6 +4,7 @@ pipeline {
     environment {
         PYTHON_VENV = 'venv_jenkins'
         QEMU_PID_FILE = 'qemu.pid'
+        // Define the URL here, ensuring it's correctly quoted if accessed in sh steps later
         OPENBMC_IMAGE_URL = 'https://jenkins.openbmc.org/job/ci-openbmc/lastSuccessfulBuild/distro=ubuntu,label=docker-builder,target=romulus/artifact/openbmc/build/tmp/deploy/images/romulus/*zip*/romulus.zip'
     }
 
@@ -52,7 +53,9 @@ pipeline {
             steps {
                 sh '''
                     echo "Downloading OpenBMC Romulus image..."
-                    wget -nv "${env.OPENBMC_IMAGE_URL}" -O romulus.zip
+                    # Use "$OPENBMC_IMAGE_URL" for shell access to the Jenkins environment variable
+                    # The double quotes are important to handle special characters in the URL
+                    wget -nv "$OPENBMC_IMAGE_URL" -O romulus.zip
                     
                     echo "Unzipping Romulus image..."
                     unzip -o romulus.zip -d .
@@ -60,12 +63,16 @@ pipeline {
                     echo "Contents of romulus directory:"
                     ls -l romulus/
                     
-                    if [ ! -f romulus/*.static.mtd ]; then
+                    # Verify that the MTD file exists after unzipping
+                    # The find command will get the exact filename
+                    OPENBMC_MTD_FILE=$(find romulus -name '*.static.mtd' -print -quit)
+                    if [ -z "$OPENBMC_MTD_FILE" ] || [ ! -f "$OPENBMC_MTD_FILE" ]; then
                         echo "ERROR: No .static.mtd file found in romulus directory after unzip."
-                        find . -name '*.static.mtd' -print
+                        echo "Listing current directory structure:"
+                        ls -R .
                         exit 1
                     fi
-                    echo "OpenBMC image prepared."
+                    echo "OpenBMC image prepared: $OPENBMC_MTD_FILE"
                 '''
             }
         }
@@ -86,6 +93,7 @@ pipeline {
                     fi
 
                     echo "Finding OpenBMC MTD image file..."
+                    # This relies on the file being found in the previous stage, but good to double check or pass var
                     OPENBMC_IMAGE_FILE=$(find romulus -name '*.static.mtd' -print -quit)
                     
                     if [ -z "${OPENBMC_IMAGE_FILE}" ]; then
@@ -107,6 +115,7 @@ pipeline {
                     QEMU_NOHUP_PID=$!
                     echo "Nohup QEMU process started with PID ${QEMU_NOHUP_PID}."
                     sleep 5 
+                    # Ensure we are looking for the correct QEMU process, using the specific MTD file path
                     QEMU_ACTUAL_PID=$(pgrep -f "qemu-system-arm -M romulus-bmc -nographic -drive file=${OPENBMC_IMAGE_FILE}")
                     
                     if [ -z "${QEMU_ACTUAL_PID}" ]; then
