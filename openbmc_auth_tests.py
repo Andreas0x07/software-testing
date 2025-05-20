@@ -23,7 +23,7 @@ class OpenBMCAuthTests(unittest.TestCase):
     def setUp(self):
         chrome_options = Options()
         chrome_options.add_argument('--ignore-certificate-errors')
-        # chrome_options.add_argument('--headless')
+        chrome_options.add_argument('--headless')
         chrome_options.add_argument('--no-sandbox')
         chrome_options.add_argument('--disable-dev-shm-usage')
         chrome_options.add_argument("--start-maximized")
