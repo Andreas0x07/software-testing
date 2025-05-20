@@ -26,11 +26,11 @@ pipeline {
                 fi
                 echo "Starting QEMU with image: $IMAGE_FILE"
                 
-                # Redirect QEMU output to files
-                qemu-system-arm -m 1024 -M romulus-bmc -nographic \
+                # Start QEMU with serial input to bypass U-Boot prompt
+                (echo -e "\\n" | qemu-system-arm -m 1024 -M romulus-bmc -nographic \
                     -drive file="$IMAGE_FILE",format=raw,if=mtd \
                     -net nic -net user,hostfwd=tcp::2222-:22,hostfwd=tcp::2443-:443,hostfwd=udp::2623-:623,hostname=qemu \
-                    > qemu_stdout.log 2> qemu_stderr.log &
+                    > qemu_stdout.log 2> qemu_stderr.log) &
                 
                 QEMU_PID=$!
                 echo "QEMU started with PID $QEMU_PID. Waiting for it to become accessible..."
@@ -38,10 +38,8 @@ pipeline {
                 REDFISH_READY=0
                 for i in {1..180}; do # Loop for up to 6 minutes (180 * 2s)
                     echo "Waiting for QEMU (Attempt $i/180)..."
-                    # Check if port is open first
                     if nc -z localhost 2443; then
                         echo "Port 2443 is open. Checking Redfish service readiness..."
-                        # Try to curl the Redfish endpoint, looking for a 200 OK or any JSON response
                         if curl --connect-timeout 10 -k -s -o /dev/null -w "%{http_code}" https://localhost:2443/redfish/v1 | grep -E "200|401|403|500"; then
                             echo "Redfish service at https://localhost:2443/redfish/v1 responded."
                             REDFISH_READY=1
@@ -52,7 +50,6 @@ pipeline {
                     else
                         echo "Port 2443 not yet open."
                     fi
-                    # Check if QEMU process is still running
                     if ! ps -p $QEMU_PID > /dev/null; then
                         echo "QEMU process $QEMU_PID is no longer running. Aborting wait."
                         cat qemu_stderr.log # Print QEMU stderr if it died
@@ -77,7 +74,6 @@ pipeline {
             }
             post {
                 always {
-                    // Archive QEMU logs
                     archiveArtifacts artifacts: 'qemu_stdout.log, qemu_stderr.log', allowEmptyArchive: true
                 }
             }
@@ -103,18 +99,18 @@ pipeline {
         stage('Run WebUI Tests') {
             steps {
                 sh '''
-                apt-get install -y chromium-chromedriver xvfb # xvfb for truly headless
+                apt-get install -y chromium-chromedriver xvfb
                 python3 -m pip install --user --no-cache-dir selenium==4.27.1 selenium-wire==5.1.0 blinker==1.6.2 html-testrunner pyvirtualdisplay
                 export PATH=$PATH:/root/.local/bin
                 # Start xvfb for headless operation
-                # Xvfb :99 -screen 0 1280x1024x24 &
-                # export DISPLAY=:99
+                Xvfb :99 -screen 0 1280x1024x24 &
+                export DISPLAY=:99
                 python3 openbmc_auth_tests.py || true
                 '''
             }
             post {
                 always {
-                    archiveArtifacts artifacts: 'test_report.html', allowEmptyArchive: true
+                    archiveArtifacts artifacts: 'reports/webui_test_report.html', allowEmptyArchive: true
                 }
             }
         }
@@ -134,13 +130,12 @@ pipeline {
                 }
             }
         }
-    } // End of stages
+    }
 
     post {
         always {
             sh '''
             echo "Attempting to stop QEMU process..."
-            # Try to kill QEMU gracefully then forcefully
             pkill -f qemu-system-arm && sleep 5
             pkill -9 -f qemu-system-arm || echo "QEMU process not found or already killed."
             echo "QEMU cleanup attempted."
