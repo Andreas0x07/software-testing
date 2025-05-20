@@ -36,6 +36,9 @@ pipeline {
                     echo "Error: QEMU failed to start within 240 seconds"
                     exit 1
                 fi
+                echo "QEMU port 2443 is open. Giving extra time for services to stabilize..."
+                sleep 20
+                echo "Presuming OpenBMC services are now stable."
                 '''
             }
         }
