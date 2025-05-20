@@ -11,7 +11,7 @@ pipeline {
     stages {
         stage('Checkout SCM') {
             steps {
-                git credentialsId: 'your-github-credentials-id', url: 'your-github-repo-url' // Configure credentials in Jenkins
+                git credentialsId: 'github-credentials', url: 'your-github-repo-url' // Configure credentials in Jenkins
                 sh 'ls -la' // Verify checkout
             }
         }
