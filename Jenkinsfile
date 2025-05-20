@@ -30,7 +30,7 @@ pipeline {
                     echo "Python3: $(which python3 || echo 'python3 not found')"
                     echo "pip3: $(which pip3 || echo 'pip3 not found')"
                     echo "IPMItool: $(which ipmitool || echo 'ipmitool not found')"
-                    echo "Chromium Driver: $(which chromedriver || echo 'chromedriver not found in PATH')"
+                    echo "Chromium Driver: $(which chromedriver || which chromium-driver || echo 'chromium-driver not found')"
                     echo "Chromium: $(which chromium || echo 'chromium not found')"
                     echo "Checking sudo access for jenkins user:"
                     sudo -n true && echo "Jenkins user has passwordless sudo access." || echo "Jenkins user does NOT have passwordless sudo access (or sudo not found)."
@@ -52,7 +52,8 @@ pipeline {
             steps {
                 sh '''
                     echo "Downloading OpenBMC Romulus image..."
-                    wget -nv "$OPENBMC_IMAGE_URL" -O romulus.zip
+                    # Using "${OPENBMC_IMAGE_URL}" with quotes for safety, though wget usually handles it.
+                    wget -nv "${OPENBMC_IMAGE_URL}" -O romulus.zip
                     
                     echo "Unzipping Romulus image..."
                     unzip -o romulus.zip -d .
@@ -60,14 +61,15 @@ pipeline {
                     echo "Contents of romulus directory:"
                     ls -l romulus/
                     
-                    OPENBMC_MTD_FILE=$(find romulus -name '*.static.mtd' -print -quit)
-                    if [ -z "$OPENBMC_MTD_FILE" ] || [ ! -f "$OPENBMC_MTD_FILE" ]; then
+                    # Verify MTD file exists
+                    OPENBMC_MTD_CHECK=$(find romulus -name '*.static.mtd' -print -quit)
+                    if [ -z "${OPENBMC_MTD_CHECK}" ] || [ ! -f "${OPENBMC_MTD_CHECK}" ]; then
                         echo "ERROR: No .static.mtd file found in romulus directory after unzip."
                         echo "Listing current directory structure:"
                         ls -R .
                         exit 1
                     fi
-                    echo "OpenBMC image prepared: $OPENBMC_MTD_FILE"
+                    echo "OpenBMC image prepared: ${OPENBMC_MTD_CHECK}"
                 '''
             }
         }
@@ -108,23 +110,33 @@ pipeline {
                     
                     QEMU_NOHUP_PID=$!
                     echo "Nohup QEMU process started with PID ${QEMU_NOHUP_PID}."
-                    # Increased sleep slightly before pgrep
-                    sleep 8
                     
-                    # Simpler pgrep pattern, focusing on key unique parts of the QEMU command
-                    # This looks for the QEMU command for the romulus-bmc machine type with nographic option
-                    QEMU_ACTUAL_PID=$(pgrep -f "qemu-system-arm -M romulus-bmc -nographic")
+                    sleep 8 
+                    
+                    # Define the specific pgrep pattern in a variable
+                    QEMU_PGREP_PATTERN="qemu-system-arm -M romulus-bmc -nographic -drive file=${OPENBMC_IMAGE_FILE}"
+                    echo "Attempting to find QEMU PID using specific pgrep pattern: '${QEMU_PGREP_PATTERN}'"
+                    QEMU_ACTUAL_PID=$(pgrep -f "${QEMU_PGREP_PATTERN}")
+                    
+                    # Fallback to a slightly less specific pattern if the first one fails
+                    if [ -z "${QEMU_ACTUAL_PID}" ]; then
+                        echo "Failed to find QEMU with specific pattern. Trying a more general pattern..."
+                        QEMU_SIMPLE_PGREP_PATTERN="qemu-system-arm -M romulus-bmc -nographic"
+                        echo "Attempting to find QEMU PID using general pgrep pattern: '${QEMU_SIMPLE_PGREP_PATTERN}'"
+                        QEMU_ACTUAL_PID=$(pgrep -f "${QEMU_SIMPLE_PGREP_PATTERN}")
+                    fi
                     
                     if [ -z "${QEMU_ACTUAL_PID}" ]; then
-                        echo "Failed to get QEMU actual PID using simplified pgrep. Log content:"
+                        echo "Still failed to get QEMU actual PID after fallback."
+                        echo "QEMU Log (qemu_openbmc.log):"
                         cat qemu_openbmc.log
-                        # List processes to see what QEMU command looks like
-                        echo "Listing qemu processes:"
-                        ps aux | grep qemu-system-arm
-                        sudo kill -9 ${QEMU_NOHUP_PID} || echo "Failed to kill nohup PID ${QEMU_NOHUP_PID}"
+                        echo "Listing current qemu processes (if any) via ps:"
+                        ps aux | grep qemu-system-arm | grep -v grep
+                        echo "Killing nohup starter PID ${QEMU_NOHUP_PID} (if QEMU process itself not found)."
+                        sudo kill -9 ${QEMU_NOHUP_PID} || echo "Failed to kill nohup PID ${QEMU_NOHUP_PID}, or it was not running."
                         exit 1
                     fi
-                    # If multiple PIDs are found by pgrep (unlikely for this specific setup but possible), take the first one.
+                    
                     QEMU_ACTUAL_PID=$(echo ${QEMU_ACTUAL_PID} | awk '{print $1}')
 
                     echo "QEMU started with actual PID ${QEMU_ACTUAL_PID}. Storing to ${QEMU_PID_FILE}."
@@ -134,7 +146,8 @@ pipeline {
                     sleep 90
                     
                     echo "Verifying OpenBMC IPMI responsiveness..."
-                    ipmitool -I lanplus -H 127.0.0.1 -p 2623 -U root -P 0penBmc -R 3 -N 5 chassis power status
+                    # Increased retries and timeout for ipmitool
+                    ipmitool -I lanplus -H 127.0.0.1 -p 2623 -U root -P 0penBmc -R 5 -N 10 chassis power status
                     if [ $? -ne 0 ]; then
                         echo "OpenBMC did not start correctly or is not responding via IPMI."
                         echo "QEMU Log (qemu_openbmc.log):"
@@ -177,7 +190,9 @@ pipeline {
                     mkdir -p tests/webui
                     cp openbmc_auth_tests.py tests/webui/
                     echo "Running WebUI tests..."
-                    mkdir -p reports 
+                    # Ensure reports directory exists for HtmlTestRunner if tests write there
+                    # mkdir -p reports 
+                    # The python script is set to output test_report.html in the workspace root.
                     python tests/webui/openbmc_auth_tests.py || echo "Selenium WebUI tests failed or found issues."
                 '''
             }
