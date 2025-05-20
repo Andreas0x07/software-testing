@@ -109,44 +109,55 @@ pipeline {
                         > qemu_openbmc.log 2>&1 &
                     
                     QEMU_NOHUP_PID=$!
-                    echo "Nohup QEMU process started with PID ${QEMU_NOHUP_PID}."
+                    echo "Nohup QEMU process potentially started with PID ${QEMU_NOHUP_PID}."
                     
                     sleep 8 
                     
-                    # Define the specific pgrep pattern in a variable
-                    QEMU_PGREP_PATTERN="qemu-system-arm -M romulus-bmc -nographic -drive file=${OPENBMC_IMAGE_FILE}"
-                    echo "Attempting to find QEMU PID using specific pgrep pattern: '${QEMU_PGREP_PATTERN}'"
-                    QEMU_ACTUAL_PID=$(pgrep -f "${QEMU_PGREP_PATTERN}")
-                    
-                    # Fallback to a slightly less specific pattern if the first one fails
-                    if [ -z "${QEMU_ACTUAL_PID}" ]; then
-                        echo "Failed to find QEMU with specific pattern. Trying a more general pattern..."
-                        QEMU_SIMPLE_PGREP_PATTERN="qemu-system-arm -M romulus-bmc -nographic"
-                        echo "Attempting to find QEMU PID using general pgrep pattern: '${QEMU_SIMPLE_PGREP_PATTERN}'"
-                        QEMU_ACTUAL_PID=$(pgrep -f "${QEMU_SIMPLE_PGREP_PATTERN}")
+                    QEMU_ACTUAL_PID=""
+                    # Verify if the process with QEMU_NOHUP_PID is running and is the correct QEMU process
+                    if ps -p ${QEMU_NOHUP_PID} > /dev/null; then
+                        echo "Process with PID ${QEMU_NOHUP_PID} (from nohup) is running."
+                        ACTUAL_CMD=$(ps -o args= -p ${QEMU_NOHUP_PID}) # Get command with all arguments
+                        echo "Command for PID ${QEMU_NOHUP_PID}: ${ACTUAL_CMD}"
+                        
+                        # Check if the command line contains key identifiers of our QEMU process
+                        # Using multiple greps for robustness.
+                        if echo "${ACTUAL_CMD}" | grep -q "qemu-system-arm" && \
+                           echo "${ACTUAL_CMD}" | grep -q -- "-M romulus-bmc" && \
+                           echo "${ACTUAL_CMD}" | grep -q -- "-nographic" && \
+                           echo "${ACTUAL_CMD}" | grep -q -- "-drive file=${OPENBMC_IMAGE_FILE}"; then
+                            echo "Command for PID ${QEMU_NOHUP_PID} matches expected QEMU process."
+                            QEMU_ACTUAL_PID=${QEMU_NOHUP_PID}
+                        else
+                            echo "Command for PID ${QEMU_NOHUP_PID} (${ACTUAL_CMD}) does NOT precisely match all expected QEMU parameters."
+                            echo "Expected to contain: 'qemu-system-arm', '-M romulus-bmc', '-nographic', AND '-drive file=${OPENBMC_IMAGE_FILE}'"
+                        fi
+                    else
+                        echo "Process with PID ${QEMU_NOHUP_PID} (from nohup) is NOT running after sleep."
                     fi
-                    
+
                     if [ -z "${QEMU_ACTUAL_PID}" ]; then
-                        echo "Still failed to get QEMU actual PID after fallback."
-                        echo "QEMU Log (qemu_openbmc.log):"
+                        echo "Failed to confirm QEMU process using PID from nohup (${QEMU_NOHUP_PID})."
+                        echo "QEMU Log (qemu_openbmc.log) content:"
                         cat qemu_openbmc.log
                         echo "Listing current qemu processes (if any) via ps:"
                         ps aux | grep qemu-system-arm | grep -v grep
-                        echo "Killing nohup starter PID ${QEMU_NOHUP_PID} (if QEMU process itself not found)."
-                        sudo kill -9 ${QEMU_NOHUP_PID} || echo "Failed to kill nohup PID ${QEMU_NOHUP_PID}, or it was not running."
+                        
+                        # Attempt to kill the original QEMU_NOHUP_PID if it exists but didn't validate, or if it died.
+                        if ps -p ${QEMU_NOHUP_PID} > /dev/null; then
+                           echo "Killing unverified/mismatched process with PID ${QEMU_NOHUP_PID}."
+                           sudo kill -9 ${QEMU_NOHUP_PID} || echo "Failed to kill PID ${QEMU_NOHUP_PID}, or it was not running."
+                        fi
                         exit 1
                     fi
                     
-                    QEMU_ACTUAL_PID=$(echo ${QEMU_ACTUAL_PID} | awk '{print $1}')
-
-                    echo "QEMU started with actual PID ${QEMU_ACTUAL_PID}. Storing to ${QEMU_PID_FILE}."
+                    echo "QEMU confirmed running with PID ${QEMU_ACTUAL_PID}. Storing to ${QEMU_PID_FILE}."
                     echo ${QEMU_ACTUAL_PID} > ${QEMU_PID_FILE}
 
                     echo "Waiting for OpenBMC to boot (90 seconds)..."
                     sleep 90
                     
                     echo "Verifying OpenBMC IPMI responsiveness..."
-                    # Increased retries and timeout for ipmitool
                     ipmitool -I lanplus -H 127.0.0.1 -p 2623 -U root -P 0penBmc -R 5 -N 10 chassis power status
                     if [ $? -ne 0 ]; then
                         echo "OpenBMC did not start correctly or is not responding via IPMI."
@@ -156,6 +167,7 @@ pipeline {
                             echo "Attempting to kill QEMU PID $(cat ${QEMU_PID_FILE})..."
                             sudo kill -9 $(cat ${QEMU_PID_FILE}) || echo "Failed to kill QEMU PID $(cat ${QEMU_PID_FILE}), or it wasn't running."
                         else
+                             # Fallback kill if PID file wasn't created or PID is not the one
                              sudo pkill -9 -f "qemu-system-arm -M romulus-bmc" || echo "pgrep kill attempt: QEMU process not found or already stopped."
                         fi
                         exit 1
