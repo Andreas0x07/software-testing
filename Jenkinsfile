@@ -10,15 +10,11 @@ pipeline {
     stages {
         stage('Checkout SCM') {
             steps {
-                // This checkout step in the Jenkinsfile ensures the correct branch is used for the build,
-                // overriding any default SCM polling behavior if necessary.
-                // It will use the SCM configuration from the Jenkins job (URL, credentials).
-                // We specify the branch explicitly.
                 checkout([
                     $class: 'GitSCM',
-                    branches: [[name: '*/lab78']], // Ensure this matches your branch
-                    userRemoteConfigs: scm.userRemoteConfigs, // Uses credentials from job config
-                    extensions: scm.extensions // Includes any SCM extensions from job config
+                    branches: [[name: '*/lab78']], 
+                    userRemoteConfigs: scm.userRemoteConfigs, 
+                    extensions: scm.extensions 
                 ])
                 sh 'ls -la'
             }
@@ -34,7 +30,7 @@ pipeline {
                     echo "Python3: $(which python3 || echo 'python3 not found')"
                     echo "pip3: $(which pip3 || echo 'pip3 not found')"
                     echo "IPMItool: $(which ipmitool || echo 'ipmitool not found')"
-                    echo "Chromium Driver: $(which chromium-driver || echo 'chromium-driver not found')"
+                    echo "Chromium Driver: $(which chromedriver || echo 'chromedriver not found in PATH')"
                     echo "Chromium: $(which chromium || echo 'chromium not found')"
                     echo "Checking sudo access for jenkins user:"
                     sudo -n true && echo "Jenkins user has passwordless sudo access." || echo "Jenkins user does NOT have passwordless sudo access (or sudo not found)."
@@ -45,7 +41,7 @@ pipeline {
                     
                     echo "Installing/Verifying Python packages..."
                     pip install --upgrade pip
-                    pip install pytest requests selenium selenium-wire locust psutil HtmlTestRunner
+                    pip install pytest requests selenium selenium-wire locust psutil html-testRunner
 
                     echo "Python virtual environment setup complete."
                 '''
@@ -116,7 +112,6 @@ pipeline {
                     if [ -z "${QEMU_ACTUAL_PID}" ]; then
                         echo "Failed to get QEMU actual PID. Log content:"
                         cat qemu_openbmc.log
-                        # Attempt to kill the nohup job if the main process didn't start
                         sudo kill -9 ${QEMU_NOHUP_PID} || echo "Failed to kill nohup PID ${QEMU_NOHUP_PID}"
                         exit 1
                     fi
@@ -127,7 +122,6 @@ pipeline {
                     sleep 90
                     
                     echo "Verifying OpenBMC IPMI responsiveness..."
-                    # Increased timeout for ipmitool, default is too short for QEMU sometimes
                     ipmitool -I lanplus -H 127.0.0.1 -p 2623 -U root -P 0penBmc -R 3 -N 5 chassis power status
                     if [ $? -ne 0 ]; then
                         echo "OpenBMC did not start correctly or is not responding via IPMI."
@@ -152,7 +146,6 @@ pipeline {
                 sh '''
                     . ${PYTHON_VENV}/bin/activate
                     mkdir -p tests/api 
-                    # Assuming test_redfish.py is at the root of your repository
                     cp test_redfish.py tests/api/ 
                     pytest tests/api/test_redfish.py --junitxml=pytest_api_report.xml || echo "PyTest API tests failed or found issues."
                 '''
@@ -170,17 +163,14 @@ pipeline {
                 sh '''
                     . ${PYTHON_VENV}/bin/activate
                     mkdir -p tests/webui
-                    # Assuming openbmc_auth_tests.py is at the root of your repository
                     cp openbmc_auth_tests.py tests/webui/
                     echo "Running WebUI tests..."
-                    # Ensure reports directory exists for HtmlTestRunner
                     mkdir -p reports 
                     python tests/webui/openbmc_auth_tests.py || echo "Selenium WebUI tests failed or found issues."
                 '''
             }
             post {
                 always {
-                    // HtmlTestRunner output is named 'test_report.html' at the root of workspace by your script
                     archiveArtifacts artifacts: 'test_report.html, qemu_openbmc.log', fingerprint: true
                     publishHTML([allowMissing: true, alwaysLinkToLastBuild: false, keepAll: true, reportDir: '.', reportFiles: 'test_report.html', reportName: 'Selenium WebUI Report', reportTitles: ''])
                 }
@@ -192,7 +182,6 @@ pipeline {
                 sh '''
                     . ${PYTHON_VENV}/bin/activate
                     mkdir -p tests/load
-                    # Assuming locustfile.py is at the root of your repository
                     cp locustfile.py tests/load/
                     echo "Starting Locust load test..."
                     locust -f tests/load/locustfile.py --headless -u 10 -r 2 -t 30s --host=https://localhost:2443 --csv=locust_report --html=locust_report.html || echo "Locust load test execution had issues or completed with non-zero exit."
