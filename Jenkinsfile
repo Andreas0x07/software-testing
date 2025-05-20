@@ -4,7 +4,6 @@ pipeline {
     environment {
         PYTHON_VENV = 'venv_jenkins'
         QEMU_PID_FILE = 'qemu.pid'
-        // Define the URL here, ensuring it's correctly quoted if accessed in sh steps later
         OPENBMC_IMAGE_URL = 'https://jenkins.openbmc.org/job/ci-openbmc/lastSuccessfulBuild/distro=ubuntu,label=docker-builder,target=romulus/artifact/openbmc/build/tmp/deploy/images/romulus/*zip*/romulus.zip'
     }
 
@@ -13,9 +12,9 @@ pipeline {
             steps {
                 checkout([
                     $class: 'GitSCM',
-                    branches: [[name: '*/lab78']], 
-                    userRemoteConfigs: scm.userRemoteConfigs, 
-                    extensions: scm.extensions 
+                    branches: [[name: '*/lab78']],
+                    userRemoteConfigs: scm.userRemoteConfigs,
+                    extensions: scm.extensions
                 ])
                 sh 'ls -la'
             }
@@ -53,8 +52,6 @@ pipeline {
             steps {
                 sh '''
                     echo "Downloading OpenBMC Romulus image..."
-                    # Use "$OPENBMC_IMAGE_URL" for shell access to the Jenkins environment variable
-                    # The double quotes are important to handle special characters in the URL
                     wget -nv "$OPENBMC_IMAGE_URL" -O romulus.zip
                     
                     echo "Unzipping Romulus image..."
@@ -63,8 +60,6 @@ pipeline {
                     echo "Contents of romulus directory:"
                     ls -l romulus/
                     
-                    # Verify that the MTD file exists after unzipping
-                    # The find command will get the exact filename
                     OPENBMC_MTD_FILE=$(find romulus -name '*.static.mtd' -print -quit)
                     if [ -z "$OPENBMC_MTD_FILE" ] || [ ! -f "$OPENBMC_MTD_FILE" ]; then
                         echo "ERROR: No .static.mtd file found in romulus directory after unzip."
@@ -93,7 +88,6 @@ pipeline {
                     fi
 
                     echo "Finding OpenBMC MTD image file..."
-                    # This relies on the file being found in the previous stage, but good to double check or pass var
                     OPENBMC_IMAGE_FILE=$(find romulus -name '*.static.mtd' -print -quit)
                     
                     if [ -z "${OPENBMC_IMAGE_FILE}" ]; then
@@ -114,16 +108,25 @@ pipeline {
                     
                     QEMU_NOHUP_PID=$!
                     echo "Nohup QEMU process started with PID ${QEMU_NOHUP_PID}."
-                    sleep 5 
-                    # Ensure we are looking for the correct QEMU process, using the specific MTD file path
-                    QEMU_ACTUAL_PID=$(pgrep -f "qemu-system-arm -M romulus-bmc -nographic -drive file=${OPENBMC_IMAGE_FILE}")
+                    # Increased sleep slightly before pgrep
+                    sleep 8
+                    
+                    # Simpler pgrep pattern, focusing on key unique parts of the QEMU command
+                    # This looks for the QEMU command for the romulus-bmc machine type with nographic option
+                    QEMU_ACTUAL_PID=$(pgrep -f "qemu-system-arm -M romulus-bmc -nographic")
                     
                     if [ -z "${QEMU_ACTUAL_PID}" ]; then
-                        echo "Failed to get QEMU actual PID. Log content:"
+                        echo "Failed to get QEMU actual PID using simplified pgrep. Log content:"
                         cat qemu_openbmc.log
+                        # List processes to see what QEMU command looks like
+                        echo "Listing qemu processes:"
+                        ps aux | grep qemu-system-arm
                         sudo kill -9 ${QEMU_NOHUP_PID} || echo "Failed to kill nohup PID ${QEMU_NOHUP_PID}"
                         exit 1
                     fi
+                    # If multiple PIDs are found by pgrep (unlikely for this specific setup but possible), take the first one.
+                    QEMU_ACTUAL_PID=$(echo ${QEMU_ACTUAL_PID} | awk '{print $1}')
+
                     echo "QEMU started with actual PID ${QEMU_ACTUAL_PID}. Storing to ${QEMU_PID_FILE}."
                     echo ${QEMU_ACTUAL_PID} > ${QEMU_PID_FILE}
 
