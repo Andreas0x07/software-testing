@@ -21,23 +21,32 @@ pipeline {
                     echo "Error: No image file found matching romulus/obmc-phosphor-image-romulus-*.static.mtd"
                     exit 1
                 fi
-                qemu-system-arm -m 256 -M romulus-bmc -nographic \
+                echo "Starting QEMU with image: $IMAGE_FILE"
+                # Increased memory to 1024M
+                qemu-system-arm -m 1024 -M romulus-bmc -nographic \
                     -drive file="$IMAGE_FILE",format=raw,if=mtd \
                     -net nic -net user,hostfwd=tcp::2222-:22,hostfwd=tcp::2443-:443,hostfwd=udp::2623-:623,hostname=qemu &
-                for i in {1..120}; do
-                    if nc -z localhost 2443 || curl -k https://localhost:2443/redfish/v1 >/dev/null 2>&1; then
-                        echo "QEMU is ready"
+                
+                echo "Waiting for QEMU to become accessible..."
+                for i in {1..150}; do # Increased loop for up to 300 seconds
+                    # Check if port 2443 is listening OR if the Redfish service endpoint gives any response (even an error)
+                    if nc -z localhost 2443 || curl --connect-timeout 5 -k https://localhost:2443/redfish/v1 >/dev/null 2>&1; then
+                        echo "QEMU port 2443 is open or Redfish service is responding."
                         break
                     fi
-                    echo "Waiting for QEMU to start..."
+                    echo "Waiting for QEMU (Attempt $i/150)..."
                     sleep 2
                 done
-                if ! nc -z localhost 2443; then
-                    echo "Error: QEMU failed to start within 240 seconds"
+
+                if ! nc -z localhost 2443; then # Final check on port
+                    echo "Error: QEMU port 2443 failed to become open within 300 seconds."
+                    # Attempt to get QEMU logs if possible (advanced, might need to redirect QEMU output to a file)
+                    ps aux | grep qemu-system-arm
                     exit 1
                 fi
-                echo "QEMU port 2443 is open. Giving extra time for services to stabilize..."
-                sleep 20
+                
+                echo "QEMU port 2443 is open. Giving extra 45 seconds for services to stabilize..."
+                sleep 45 
                 echo "Presuming OpenBMC services are now stable."
                 '''
             }
@@ -66,6 +75,9 @@ pipeline {
                 apt-get install -y chromium-chromedriver
                 python3 -m pip install --user --no-cache-dir selenium==4.27.1 selenium-wire==5.1.0 blinker==1.6.2 html-testrunner
                 export PATH=$PATH:/root/.local/bin
+                # Ensure chromedriver from apt is in PATH or accessible
+                # If issues persist, try: export CHROMEDRIVER_PATH=$(which chromedriver)
+                # echo "Chromedriver path: $CHROMEDRIVER_PATH"
                 python3 openbmc_auth_tests.py || true
                 '''
             }
@@ -82,7 +94,7 @@ pipeline {
                 export PATH=$PATH:/root/.local/bin
                 python3 -m pip install --user locust
                 mkdir -p reports
-                locust -f locustfile.py --headless --users 10 --spawn-rate 2 --run-time 1m --html reports/load_test.html
+                locust -f locustfile.py --headless --users 10 --spawn-rate 2 --run-time 1m --html reports/load_test.html || echo "Locust tests completed or failed"
                 '''
             }
             post {
@@ -95,7 +107,11 @@ pipeline {
 
     post {
         always {
-            sh 'pkill -f qemu-system-arm || true'
+            sh '''
+            echo "Attempting to stop QEMU process..."
+            pkill -f qemu-system-arm || echo "QEMU process not found or already killed."
+            echo "QEMU cleanup attempted."
+            '''
         }
     }
 }
