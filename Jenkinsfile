@@ -10,6 +10,11 @@ pipeline {
         stage('Setup QEMU and OpenBMC') {
             steps {
                 sh '''
+                # Set non-interactive frontend for apt-get
+                export DEBIAN_FRONTEND=noninteractive
+                # Preconfigure tzdata to avoid interactive prompt
+                echo "tzdata tzdata/Areas select Etc" | debconf-set-selections
+                echo "tzdata tzdata/Zones/Etc select UTC" | debconf-set-selections
                 apt-get update && apt-get install -y qemu-system-arm unzip wget netcat python3 python3-pip
                 wget -O romulus.zip "https://jenkins.openbmc.org/job/ci-openbmc/lastSuccessfulBuild/distro=ubuntu,label=docker-builder,target=romulus/artifact/openbmc/build/tmp/deploy/images/romulus/*zip*/romulus.zip" || { echo "Download failed"; exit 1; }
                 unzip -o romulus.zip
