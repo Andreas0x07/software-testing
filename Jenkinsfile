@@ -10,9 +10,7 @@ pipeline {
         stage('Setup QEMU and OpenBMC') {
             steps {
                 sh '''
-                # Set non-interactive frontend for apt-get
                 export DEBIAN_FRONTEND=noninteractive
-                # Preconfigure tzdata to avoid interactive prompt
                 echo "tzdata tzdata/Areas select Etc" | debconf-set-selections
                 echo "tzdata tzdata/Zones/Etc select UTC" | debconf-set-selections
                 apt-get update && apt-get install -y qemu-system-arm unzip wget netcat python3 python3-pip
@@ -45,6 +43,7 @@ pipeline {
         stage('Run Redfish Autotests') {
             steps {
                 sh '''
+                export PATH=$PATH:/root/.local/bin
                 python3 -m pip install --user pytest requests
                 mkdir -p reports
                 pytest test_redfish.py --junitxml=reports/autotests.xml || true
@@ -60,8 +59,9 @@ pipeline {
         stage('Run WebUI Tests') {
             steps {
                 sh '''
-                apt-get install -y chromium-driver
-                python3 -m pip install --user selenium selenium-wire html-testrunner
+                apt-get install -y chromium-chromedriver
+                python3 -m pip install --user selenium selenium-wire==5.1.0 blinker==1.6.2 html-testrunner
+                export PATH=$PATH:/root/.local/bin
                 python3 openbmc_auth_tests.py || true
                 '''
             }
@@ -75,6 +75,7 @@ pipeline {
         stage('Run Load Tests') {
             steps {
                 sh '''
+                export PATH=$PATH:/root/.local/bin
                 python3 -m pip install --user locust
                 mkdir -p reports
                 locust -f locustfile.py --headless --users 10 --spawn-rate 2 --run-time 1m --html reports/load_test.html || true
