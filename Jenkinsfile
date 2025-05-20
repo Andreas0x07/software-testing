@@ -10,72 +10,24 @@ pipeline {
         stage('Setup QEMU and OpenBMC') {
             steps {
                 sh '''
-                export DEBIAN_FRONTEND=noninteractive
-                echo "tzdata tzdata/Areas select Etc" | debconf-set-selections
-                echo "tzdata tzdata/Zones/Etc select UTC" | debconf-set-selections
-                apt-get update && apt-get install -y qemu-system-arm unzip wget netcat-openbsd python3 python3-pip curl
-
-                echo "Downloading OpenBMC image..."
-                wget -O romulus.zip "https://jenkins.openbmc.org/job/ci-openbmc/lastSuccessfulBuild/distro=ubuntu,label=docker-builder,target=romulus/artifact/openbmc/build/tmp/deploy/images/romulus/*zip*/romulus.zip" || { echo "Download failed"; exit 1; }
-                unzip -o romulus.zip
-
+                # Find the latest OpenBMC image file
                 IMAGE_FILE=$(ls romulus/obmc-phosphor-image-romulus-*.static.mtd | sort -V | tail -n 1)
-                if [ -z "$IMAGE_FILE" ]; then
-                    echo "Error: No image file found matching romulus/obmc-phosphor-image-romulus-*.static.mtd"
-                    exit 1
-                fi
-                echo "Starting QEMU with image: $IMAGE_FILE"
-
-                # Start QEMU with serial input to bypass U-Boot prompt
+                
+                # Run QEMU with a newline to bypass the U-Boot prompt
                 (echo -e "\\n" | qemu-system-arm -m 1024 -M romulus-bmc -nographic \
                     -drive file="$IMAGE_FILE",format=raw,if=mtd \
                     -net nic -net user,hostfwd=tcp::2222-:22,hostfwd=tcp::2443-:443,hostfwd=udp::2623-:623,hostname=qemu \
                     > qemu_stdout.log 2> qemu_stderr.log) &
-
-                QEMU_PID=$!
-                echo "QEMU started with PID $QEMU_PID. Waiting for it to become accessible..."
-
-                REDFISH_READY=0
-                for i in {1..180}; do
-                    echo "Waiting for QEMU (Attempt $i/180)..."
-                    if nc -z localhost 2443; then
-                        echo "Port 2443 is open. Checking Redfish service readiness..."
-                        if curl --connect-timeout 10 -k -s -o /dev/null -w "%{http_code}" https://localhost:2443/redfish/v1 | grep -E "200|401|403|500"; then
-                            echo "Redfish service at https://localhost:2443/redfish/v1 responded."
-                            REDFISH_READY=1
-                            break
-                        else
-                            echo "Redfish service not yet responding with expected HTTP code."
-                        fi
-                    else
-                        echo "Port 2443 not yet open."
-                    fi
-                    if ! ps -p $QEMU_PID > /dev/null; then
-                        echo "QEMU process $QEMU_PID is no longer running. Aborting wait."
-                        cat qemu_stderr.log
-                        exit 1
-                    fi
-                    sleep 2
-                done
-
-                if [ "$REDFISH_READY" -eq "0" ]; then
-                    echo "Error: OpenBMC Redfish service failed to become ready within the timeout."
-                    echo "Last 50 lines of QEMU stdout:"
-                    tail -n 50 qemu_stdout.log || echo "qemu_stdout.log not found or empty"
-                    echo "Last 50 lines of QEMU stderr:"
-                    tail -n 50 qemu_stderr.log || echo "qemu_stderr.log not found or empty"
+                
+                # Wait for the system to boot (adjust sleep as needed)
+                sleep 30
+                
+                # Check if Redfish service is up (port 2443)
+                if ! nc -z localhost 2443; then
+                    echo "Error: Redfish service not running!"
                     exit 1
                 fi
-
-                echo "OpenBMC Redfish service is ready. Waiting 30 seconds for stabilization..."
-                sleep 30
-                echo "Proceeding with tests."
                 '''
-            }
-            post {
-                always {
-                    archiveArtifacts artifacts: 'qemu_stdout.log, qemu_stderr.log', allowEmptyArchive: true
-                }
             }
         }
 
