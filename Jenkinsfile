@@ -425,19 +425,30 @@ pipeline {
                         if [ -n "${QEMU_PID_TO_KILL}" ]; then
                             echo "Attempting to kill QEMU process with PID ${QEMU_PID_TO_KILL}..."
                             if ps -p ${QEMU_PID_TO_KILL} > /dev/null; then
-                                sudo kill -9 ${QEMU_PID_TO_KILL} || echo "Failed to kill QEMU PID ${QEMU_PID_TO_KILL} (it might have already exited)."
-                                echo "Killed QEMU PID ${QEMU_PID_TO_KILL}."
+                                sudo kill -9 ${QEMU_PID_TO_KILL} || echo "Failed to send kill -9 to QEMU PID ${QEMU_PID_TO_KILL}."
+                                echo "Sent kill -9 to QEMU PID ${QEMU_PID_TO_KILL}. Waiting for termination..."
+                                sleep 2 # Give it a moment to terminate
+
+                                if ps -p ${QEMU_PID_TO_KILL} > /dev/null; then
+                                    echo "WARNING: QEMU PID ${QEMU_PID_TO_KILL} still found after kill -9. Attempting pkill..."
+                                    sudo pkill -9 -f "qemu-system-arm -M romulus-bmc" || echo "Fallback pkill attempt failed or QEMU already stopped."
+                                    sleep 2 # Another short sleep after pkill
+                                    if ps -p ${QEMU_PID_TO_KILL} > /dev/null; then
+                                        echo "ERROR: QEMU PID ${QEMU_PID_TO_KILL} still active after all kill attempts."
+                                    else
+                                        echo "QEMU PID ${QEMU_PID_TO_KILL} terminated after fallback pkill."
+                                    fi
+                                else
+                                    echo "QEMU PID ${QEMU_PID_TO_KILL} successfully terminated."
+                                fi
                             else
-                                echo "QEMU PID ${QEMU_PID_TO_KILL} from ${QEMU_PID_FILE} was not found running."
+                                echo "QEMU PID ${QEMU_PID_TO_KILL} from ${QEMU_PID_FILE} was not found running initially."
                             fi
                             rm -f ${QEMU_PID_FILE} 
                         else
-                            echo "No QEMU PID found in ${QEMU_PID_FILE}. Searching by process name..."
+                            echo "QEMU PID file (${QEMU_PID_FILE}) not found. Searching by process name..."
                             sudo pkill -9 -f "qemu-system-arm -M romulus-bmc" || echo "pkill attempt: QEMU process with 'qemu-system-arm -M romulus-bmc' not found or already stopped."
                         fi
-                    else
-                        echo "QEMU PID file (${QEMU_PID_FILE}) not found. Searching by process name..."
-                        sudo pkill -9 -f "qemu-system-arm -M romulus-bmc" || echo "pkill attempt: QEMU process with 'qemu-system-arm -M romulus-bmc' not found or already stopped."
                     fi
                     echo "Cleanup attempt finished."
                     echo "Final check for running QEMU processes:"
