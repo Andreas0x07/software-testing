@@ -34,14 +34,13 @@ pipeline {
                     echo "Chromium: $(which chromium || echo 'chromium not found')"
                     echo "Checking sudo access for jenkins user:"
                     sudo -n true && echo "Jenkins user has passwordless sudo access." || echo "Jenkins user does NOT have passwordless sudo access (or sudo not found)."
-
                     echo "Creating Python virtual environment..."
                     python3 -m venv ${PYTHON_VENV}
                     . ${PYTHON_VENV}/bin/activate
                     
                     echo "Installing/Verifying Python packages..."
                     pip install --upgrade pip
-                    pip install pytest requests selenium selenium-wire locust psutil html-testRunner
+                    pip install pytest requests selenium selenium-wire locust psutil html-testRunner blinker==1.7.0
 
                     echo "Python virtual environment setup complete."
                 '''
@@ -52,16 +51,13 @@ pipeline {
             steps {
                 sh '''
                     echo "Downloading OpenBMC Romulus image..."
-                    # Using "${OPENBMC_IMAGE_URL}" with quotes for safety, though wget usually handles it.
                     wget -nv "${OPENBMC_IMAGE_URL}" -O romulus.zip
                     
                     echo "Unzipping Romulus image..."
                     unzip -o romulus.zip -d .
-                    
                     echo "Contents of romulus directory:"
                     ls -l romulus/
                     
-                    # Verify MTD file exists
                     OPENBMC_MTD_CHECK=$(find romulus -name '*.static.mtd' -print -quit)
                     if [ -z "${OPENBMC_MTD_CHECK}" ] || [ ! -f "${OPENBMC_MTD_CHECK}" ]; then
                         echo "ERROR: No .static.mtd file found in romulus directory after unzip."
@@ -114,14 +110,11 @@ pipeline {
                     sleep 8 
                     
                     QEMU_ACTUAL_PID=""
-                    # Verify if the process with QEMU_NOHUP_PID is running and is the correct QEMU process
                     if ps -p ${QEMU_NOHUP_PID} > /dev/null; then
                         echo "Process with PID ${QEMU_NOHUP_PID} (from nohup) is running."
-                        ACTUAL_CMD=$(ps -o args= -p ${QEMU_NOHUP_PID}) # Get command with all arguments
+                        ACTUAL_CMD=$(ps -o args= -p ${QEMU_NOHUP_PID})
                         echo "Command for PID ${QEMU_NOHUP_PID}: ${ACTUAL_CMD}"
                         
-                        # Check if the command line contains key identifiers of our QEMU process
-                        # Using multiple greps for robustness.
                         if echo "${ACTUAL_CMD}" | grep -q "qemu-system-arm" && \
                            echo "${ACTUAL_CMD}" | grep -q -- "-M romulus-bmc" && \
                            echo "${ACTUAL_CMD}" | grep -q -- "-nographic" && \
@@ -143,7 +136,6 @@ pipeline {
                         echo "Listing current qemu processes (if any) via ps:"
                         ps aux | grep qemu-system-arm | grep -v grep
                         
-                        # Attempt to kill the original QEMU_NOHUP_PID if it exists but didn't validate, or if it died.
                         if ps -p ${QEMU_NOHUP_PID} > /dev/null; then
                            echo "Killing unverified/mismatched process with PID ${QEMU_NOHUP_PID}."
                            sudo kill -9 ${QEMU_NOHUP_PID} || echo "Failed to kill PID ${QEMU_NOHUP_PID}, or it was not running."
@@ -167,7 +159,6 @@ pipeline {
                             echo "Attempting to kill QEMU PID $(cat ${QEMU_PID_FILE})..."
                             sudo kill -9 $(cat ${QEMU_PID_FILE}) || echo "Failed to kill QEMU PID $(cat ${QEMU_PID_FILE}), or it wasn't running."
                         else
-                             # Fallback kill if PID file wasn't created or PID is not the one
                              sudo pkill -9 -f "qemu-system-arm -M romulus-bmc" || echo "pgrep kill attempt: QEMU process not found or already stopped."
                         fi
                         exit 1
@@ -202,9 +193,6 @@ pipeline {
                     mkdir -p tests/webui
                     cp openbmc_auth_tests.py tests/webui/
                     echo "Running WebUI tests..."
-                    # Ensure reports directory exists for HtmlTestRunner if tests write there
-                    # mkdir -p reports 
-                    # The python script is set to output test_report.html in the workspace root.
                     python tests/webui/openbmc_auth_tests.py || echo "Selenium WebUI tests failed or found issues."
                 '''
             }
