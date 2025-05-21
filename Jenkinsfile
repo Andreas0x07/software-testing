@@ -196,6 +196,47 @@ pipeline {
             }
         }
 
+        stage('Verify Web Service Availability') {
+            steps {
+                sh '''
+                    echo "Waiting an additional 60 seconds for web services to fully initialize..."
+                    sleep 60
+
+                    echo "Attempting to connect to https://localhost:2443/redfish/v1/"
+                    RETRY_COUNT=0
+                    MAX_RETRIES=5
+                    WEB_SVC_SUCCESS=0
+                    while [ ${RETRY_COUNT} -lt ${MAX_RETRIES} ]; do
+                        echo "Web service check attempt $((RETRY_COUNT + 1)) of ${MAX_RETRIES}..."
+                        # Using --insecure because OpenBMC uses self-signed certs
+                        # Using --head to only get headers, faster
+                        # Checking for HTTP status, expecting 200 for /redfish/v1/
+                        curl --head --silent --insecure --max-time 10 --output /dev/null --write-out "%{http_code}" https://localhost:2443/redfish/v1/ | grep -q "200"
+                        if [ $? -eq 0 ]; then
+                            WEB_SVC_SUCCESS=1
+                            echo "Web service responded with HTTP 200. Proceeding with tests."
+                            break
+                        fi
+                        RETRY_COUNT=$((RETRY_COUNT + 1))
+                        if [ ${RETRY_COUNT} -lt ${MAX_RETRIES} ]; then
+                            echo "Web service check failed or did not return HTTP 200. Retrying in 15 seconds..."
+                            sleep 15
+                        else
+                            echo "Web service check failed on final attempt."
+                        fi
+                    done
+
+                    if [ ${WEB_SVC_SUCCESS} -ne 1 ]; then
+                        echo "OpenBMC Web Service on port 2443 is not responding correctly after multiple attempts."
+                        echo "QEMU Log (qemu_openbmc.log) for review:"
+                        cat qemu_openbmc.log
+                        # Decide if you want to exit the pipeline here or let tests fail
+                        # exit 1 
+                    fi
+                '''
+            }
+        }
+
         stage('Run API Autotests (PyTest)') {
             steps {
                 sh '''
