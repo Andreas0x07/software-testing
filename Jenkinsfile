@@ -9,18 +9,6 @@ pipeline {
     }
 
     stages {
-        stage('Checkout SCM') {
-            steps {
-                checkout([
-                    $class: 'GitSCM',
-                    branches: [[name: '*/lab78']],
-                    userRemoteConfigs: scm.userRemoteConfigs,
-                    extensions: scm.extensions
-                ])
-                sh 'ls -la'
-            }
-        }
-
         stage('Setup Environment') {
             steps {
                 sh '''
