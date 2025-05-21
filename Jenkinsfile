@@ -308,7 +308,7 @@ pipeline {
                     sleep 30
                     . ${PYTHON_VENV}/bin/activate
                     echo "Starting Locust load test..."
-                    locust -f locustfile.py --headless -u 1 -r 1 -t 30s --host=https://localhost:2443 --csv=locust_report --html=locust_report.html
+                    locust -f locustfile.py --headless -u 2 -r 1 -t 60s --host=https://localhost:2443 --csv=locust_report --html=locust_report.html
                 '''
             }
             post {
