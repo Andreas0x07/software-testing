@@ -9,6 +9,16 @@ pipeline {
     }
 
     stages {
+        stage('Checkout SCM') {
+            steps {
+                // Checkout is automatically done by Jenkins when using "Pipeline script from SCM"
+                // The explicit checkout step was removed.
+                // You can still verify files are present:
+                sh 'echo "Workspace content after implicit checkout:"'
+                sh 'ls -la'
+            }
+        }
+
         stage('Setup Environment') {
             steps {
                 sh '''
@@ -36,7 +46,7 @@ pipeline {
                     echo "Installing/Verifying Python packages..."
                     pip install --upgrade pip
                     pip install pytest requests selenium selenium-wire locust psutil html-testRunner blinker==1.7.0
-
+                    
                     echo "Python virtual environment setup complete."
                 '''
             }
@@ -282,7 +292,15 @@ pipeline {
             post {
                 always {
                     archiveArtifacts artifacts: 'test_report.html, qemu_openbmc.log', fingerprint: true, allowEmptyArchive: true
-                    publishHTML([allowMissing: true, alwaysLinkToLastBuild: false, keepAll: true, reportDir: '.', reportFiles: 'test_report.html', reportName: 'Selenium WebUI Report', reportTitles: ''])
+                    publishHTML([
+                        allowMissing: true, 
+                        alwaysLinkToLastBuild: false, 
+                        keepAll: true, 
+                        reportDir: '.', 
+                        reportFiles: 'test_report.html', 
+                        reportName: 'Selenium WebUI Report', 
+                        reportTitles: ''
+                    ])
                 }
             }
         }
@@ -298,7 +316,15 @@ pipeline {
             post {
                 always {
                     archiveArtifacts artifacts: 'locust_report_stats.csv, locust_report_stats_history.csv, locust_report.html, qemu_openbmc.log', fingerprint: true, allowEmptyArchive: true
-                    publishHTML([allowMissing: true, alwaysLinkToLastBuild: false, keepAll: true, reportDir: '.', reportFiles: 'locust_report.html', reportName: 'Locust Load Test Report', reportTitles: ''])
+                    publishHTML([
+                        allowMissing: true, 
+                        alwaysLinkToLastBuild: false, 
+                        keepAll: true, 
+                        reportDir: '.', 
+                        reportFiles: 'locust_report.html', 
+                        reportName: 'Locust Load Test Report', 
+                        reportTitles: ''
+                    ])
                 }
             }
         }
