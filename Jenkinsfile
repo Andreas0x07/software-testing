@@ -11,9 +11,6 @@ pipeline {
     stages {
         stage('Checkout SCM') {
             steps {
-                // Checkout is automatically done by Jenkins when using "Pipeline script from SCM"
-                // The explicit checkout step was removed.
-                // You can still verify files are present:
                 sh 'echo "Workspace content after implicit checkout:"'
                 sh 'ls -la'
             }
@@ -46,7 +43,7 @@ pipeline {
                     echo "Installing/Verifying Python packages..."
                     pip install --upgrade pip
                     pip install pytest requests selenium selenium-wire locust psutil html-testRunner blinker==1.7.0
-                    
+                         
                     echo "Python virtual environment setup complete."
                 '''
             }
@@ -223,7 +220,6 @@ pipeline {
                         HTTP_CODE=$(curl --head --silent --insecure --max-time 15 --connect-timeout 10 --output /dev/null --write-out "%{http_code}" https://localhost:2443/redfish/v1/)
                         
                         echo "Received HTTP_CODE: ${HTTP_CODE}"
-                        # Check if the HTTP_CODE is a valid number between 200 and 499 (inclusive)
                         if [ "${HTTP_CODE}" -ge 200 ] && [ "${HTTP_CODE}" -lt 500 ]; then
                             WEB_SVC_SUCCESS=1
                             echo "Web service responded with HTTP_CODE: ${HTTP_CODE}."
@@ -308,9 +304,11 @@ pipeline {
         stage('Run Load Testing (Locust)') {
             steps {
                 sh '''
+                    echo "Waiting for 30 seconds before starting Locust to allow OpenBMC to settle..."
+                    sleep 30
                     . ${PYTHON_VENV}/bin/activate
                     echo "Starting Locust load test..."
-                    locust -f locustfile.py --headless -u 10 -r 2 -t 30s --host=https://localhost:2443 --csv=locust_report --html=locust_report.html
+                    locust -f locustfile.py --headless -u 1 -r 1 -t 30s --host=https://localhost:2443 --csv=locust_report --html=locust_report.html
                 '''
             }
             post {
