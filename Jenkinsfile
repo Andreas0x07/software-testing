@@ -175,7 +175,7 @@ pipeline {
                     . ${PYTHON_VENV}/bin/activate
                     mkdir -p tests/api 
                     cp test_redfish.py tests/api/ 
-                    pytest tests/api/test_redfish.py --junitxml=pytest_api_report.xml || echo "PyTest API tests failed or found issues."
+                    pytest tests/api/test_redfish.py --junitxml=pytest_api_report.xml
                 '''
             }
             post {
@@ -193,7 +193,7 @@ pipeline {
                     mkdir -p tests/webui
                     cp openbmc_auth_tests.py tests/webui/
                     echo "Running WebUI tests..."
-                    python tests/webui/openbmc_auth_tests.py || echo "Selenium WebUI tests failed or found issues."
+                    python tests/webui/openbmc_auth_tests.py
                 '''
             }
             post {
@@ -211,7 +211,7 @@ pipeline {
                     mkdir -p tests/load
                     cp locustfile.py tests/load/
                     echo "Starting Locust load test..."
-                    locust -f tests/load/locustfile.py --headless -u 10 -r 2 -t 30s --host=https://localhost:2443 --csv=locust_report --html=locust_report.html || echo "Locust load test execution had issues or completed with non-zero exit."
+                    locust -f tests/load/locustfile.py --headless -u 10 -r 2 -t 30s --host=https://localhost:2443 --csv=locust_report --html=locust_report.html
                 '''
             }
             post {
