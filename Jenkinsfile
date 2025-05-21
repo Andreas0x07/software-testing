@@ -1,10 +1,11 @@
 // Jenkinsfile
 pipeline {
-    agent any
+    agent any // This will run on the Jenkins master, which is our custom Docker image.
     environment {
         PYTHON_VENV = 'venv_jenkins'
         QEMU_PID_FILE = 'qemu.pid'
         OPENBMC_IMAGE_URL = 'https://jenkins.openbmc.org/job/ci-openbmc/lastSuccessfulBuild/distro=ubuntu,label=docker-builder,target=romulus/artifact/openbmc/build/tmp/deploy/images/romulus/*zip*/romulus.zip'
+        ROMULUS_DIR = 'romulus_image_files' // New environment variable for clarity
     }
 
     stages {
@@ -12,8 +13,8 @@ pipeline {
             steps {
                 checkout([
                     $class: 'GitSCM',
-                    branches: [[name: '*/lab78']],
-                    userRemoteConfigs: scm.userRemoteConfigs,
+                    branches: [[name: '*/lab78']], // Assuming this is your working branch
+                    userRemoteConfigs: scm.userRemoteConfigs, // Uses credentials from Jenkins job config
                     extensions: scm.extensions
                 ])
                 sh 'ls -la'
@@ -30,10 +31,16 @@ pipeline {
                     echo "Python3: $(which python3 || echo 'python3 not found')"
                     echo "pip3: $(which pip3 || echo 'pip3 not found')"
                     echo "IPMItool: $(which ipmitool || echo 'ipmitool not found')"
-                    echo "Chromium Driver: $(which chromedriver || which chromium-driver || echo 'chromium-driver not found')"
+                    echo "Chromium Driver: $(which chromedriver || which chromium-driver || echo 'chromedriver not found')"
                     echo "Chromium: $(which chromium || echo 'chromium not found')"
+                    
                     echo "Checking sudo access for jenkins user:"
-                    sudo -n true && echo "Jenkins user has passwordless sudo access." || echo "Jenkins user does NOT have passwordless sudo access (or sudo not found)."
+                    if sudo -n true; then
+                        echo "Jenkins user has passwordless sudo access."
+                    else
+                        echo "Jenkins user does NOT have passwordless sudo access (or sudo not found). This might cause issues later."
+                    fi
+
                     echo "Creating Python virtual environment..."
                     python3 -m venv ${PYTHON_VENV}
                     . ${PYTHON_VENV}/bin/activate
@@ -53,19 +60,28 @@ pipeline {
                     echo "Downloading OpenBMC Romulus image..."
                     wget -nv "${OPENBMC_IMAGE_URL}" -O romulus.zip
                     
-                    echo "Unzipping Romulus image..."
-                    unzip -o romulus.zip -d .
-                    echo "Contents of romulus directory:"
-                    ls -l romulus/
+                    echo "Cleaning up old OpenBMC image directory..."
+                    rm -rf ./${ROMULUS_DIR}
+                    mkdir ./${ROMULUS_DIR}
                     
-                    OPENBMC_MTD_CHECK=$(find romulus -name '*.static.mtd' -print -quit)
-                    if [ -z "${OPENBMC_MTD_CHECK}" ] || [ ! -f "${OPENBMC_MTD_CHECK}" ]; then
-                        echo "ERROR: No .static.mtd file found in romulus directory after unzip."
+                    echo "Unzipping Romulus image into ./${ROMULUS_DIR}..."
+                    unzip -o romulus.zip -d ./${ROMULUS_DIR}
+                    
+                    echo "Contents of ./${ROMULUS_DIR} directory (after unzip, it should contain a 'romulus' subfolder):"
+                    ls -l ./${ROMULUS_DIR}
+                    echo "Contents of ./${ROMULUS_DIR}/romulus/ directory:"
+                    ls -l ./${ROMULUS_DIR}/romulus/ 
+                    
+                    OPENBMC_MTD_CANDIDATE=$(find ./${ROMULUS_DIR}/romulus -name '*.static.mtd' -print -quit)
+                    
+                    if [ -z "${OPENBMC_MTD_CANDIDATE}" ] || [ ! -f "${OPENBMC_MTD_CANDIDATE}" ]; then
+                        echo "ERROR: No .static.mtd file found in ./${ROMULUS_DIR}/romulus/ after unzip."
                         echo "Listing current directory structure:"
                         ls -R .
                         exit 1
                     fi
-                    echo "OpenBMC image prepared: ${OPENBMC_MTD_CHECK}"
+                    cp "${OPENBMC_MTD_CANDIDATE}" ./openbmc_image.static.mtd
+                    echo "OpenBMC image prepared: ./openbmc_image.static.mtd (copied from ${OPENBMC_MTD_CANDIDATE})"
                 '''
             }
         }
@@ -75,25 +91,21 @@ pipeline {
                 sh '''
                     set +e 
                     
-                    if pgrep -f "qemu-system-arm -M romulus-bmc";
-                    then
-                        echo "QEMU already running. Attempting to kill..."
-                        sudo pkill -f "qemu-system-arm -M romulus-bmc"
-                        sleep 5
-                
-                        if pgrep -f "qemu-system-arm -M romulus-bmc";
-                        then
+                    if pgrep -f "qemu-system-arm -M romulus-bmc"; then
+                        echo "QEMU (romulus-bmc) already running. Attempting to kill..."
+                        sudo pkill -9 -f "qemu-system-arm -M romulus-bmc" 
+                        sleep 5 
+                        
+                        if pgrep -f "qemu-system-arm -M romulus-bmc"; then
                             echo "Failed to kill existing QEMU. Exiting."
                             exit 1
                         fi
                     fi
 
-                    echo "Finding OpenBMC MTD image file..."
-                    OPENBMC_IMAGE_FILE=$(find romulus -name '*.static.mtd' -print -quit)
-                    
-                    if [ -z "${OPENBMC_IMAGE_FILE}" ];
-                    then
-                        echo "ERROR: OpenBMC MTD image file not found in romulus/ directory."
+                    OPENBMC_IMAGE_FILE="./openbmc_image.static.mtd" 
+
+                    if [ ! -f "${OPENBMC_IMAGE_FILE}" ]; then
+                        echo "ERROR: OpenBMC MTD image file ${OPENBMC_IMAGE_FILE} not found."
                         exit 1
                     fi
                     echo "Using MTD image: ${OPENBMC_IMAGE_FILE}"
@@ -114,8 +126,7 @@ pipeline {
                     sleep 8 
                     
                     QEMU_ACTUAL_PID=""
-                    if ps -p ${QEMU_NOHUP_PID} > /dev/null;
-                    then
+                    if ps -p ${QEMU_NOHUP_PID} > /dev/null; then
                         echo "Process with PID ${QEMU_NOHUP_PID} (from nohup) is running."
                         ACTUAL_CMD=$(ps -o args= -p ${QEMU_NOHUP_PID})
                         echo "Command for PID ${QEMU_NOHUP_PID}: ${ACTUAL_CMD}"
@@ -123,42 +134,46 @@ pipeline {
                         if echo "${ACTUAL_CMD}" | grep -q "qemu-system-arm" && \
                            echo "${ACTUAL_CMD}" | grep -q -- "-M romulus-bmc" && \
                            echo "${ACTUAL_CMD}" | grep -q -- "-nographic" && \
-                           echo "${ACTUAL_CMD}" | grep -q -- "-drive.*${OPENBMC_IMAGE_FILE}"; then
+                           echo "${ACTUAL_CMD}" | grep -q -- "-drive file=${OPENBMC_IMAGE_FILE}"; then
                             echo "Command for PID ${QEMU_NOHUP_PID} matches expected QEMU process."
                             QEMU_ACTUAL_PID=${QEMU_NOHUP_PID}
                         else
                             echo "Command for PID ${QEMU_NOHUP_PID} (${ACTUAL_CMD}) does NOT precisely match all expected QEMU parameters."
-                            echo "Expected to contain: 'qemu-system-arm', '-M romulus-bmc', '-nographic', AND '-drive containing ${OPENBMC_IMAGE_FILE}'"
+                            echo "Expected to contain: 'qemu-system-arm', '-M romulus-bmc', '-nographic', AND '-drive file=${OPENBMC_IMAGE_FILE}'"
                         fi
                     else
                         echo "Process with PID ${QEMU_NOHUP_PID} (from nohup) is NOT running after sleep."
                     fi
 
-                    if [ -z "${QEMU_ACTUAL_PID}" ];
-                    then
+                    if [ -z "${QEMU_ACTUAL_PID}" ]; then
                         echo "Failed to confirm QEMU process using PID from nohup (${QEMU_NOHUP_PID})."
-                        echo "QEMU Log (qemu_openbmc.log) content:"
-                        cat qemu_openbmc.log
-                        echo "Listing current qemu processes (if any) via ps:"
-                        ps aux | grep qemu-system-arm | grep -v grep
-                        
-                        if ps -p ${QEMU_NOHUP_PID} > /dev/null;
-                        then
-                           echo "Killing unverified/mismatched process with PID ${QEMU_NOHUP_PID}."
-                           sudo kill -9 ${QEMU_NOHUP_PID} || echo "Failed to kill PID ${QEMU_NOHUP_PID}, or it was not running."
+                        echo "Checking for any qemu-system-arm process for romulus-bmc with matching image file..."
+                        QEMU_ACTUAL_PID=$(pgrep -f "qemu-system-arm -M romulus-bmc -nographic -drive file=${OPENBMC_IMAGE_FILE}")
+                        if [ -n "${QEMU_ACTUAL_PID}" ]; then
+                             echo "Found a matching QEMU process with PID ${QEMU_ACTUAL_PID} via pgrep."
+                        else
+                            echo "No matching QEMU process found via pgrep either."
+                            echo "QEMU Log (qemu_openbmc.log) content:"
+                            cat qemu_openbmc.log
+                            echo "Listing current qemu processes (if any) via ps:"
+                            ps aux | grep qemu-system-arm | grep -v grep
+                            if ps -p ${QEMU_NOHUP_PID} > /dev/null; then 
+                               echo "Attempting to kill lingering/mismatched process with PID ${QEMU_NOHUP_PID}."
+                               sudo kill -9 ${QEMU_NOHUP_PID} || echo "Failed to kill PID ${QEMU_NOHUP_PID}, or it was not running."
+                            fi
+                            exit 1
                         fi
-                        exit 1
                     fi
                     
                     echo "QEMU confirmed running with PID ${QEMU_ACTUAL_PID}. Storing to ${QEMU_PID_FILE}."
                     echo ${QEMU_ACTUAL_PID} > ${QEMU_PID_FILE}
 
-                    echo "Waiting for OpenBMC to boot (150 seconds initial wait)..." # Increased wait time
-                    sleep 150
+                    echo "Waiting for OpenBMC to boot (180 seconds initial wait)..." 
+                    sleep 180
                     
                     echo "Verifying OpenBMC IPMI responsiveness with retries..."
                     RETRY_COUNT=0
-                    MAX_RETRIES=5 # Try up to 5 times (total additional wait up to 4*15 = 60 seconds)
+                    MAX_RETRIES=6 
                     IPMI_SUCCESS=0
                     while [ ${RETRY_COUNT} -lt ${MAX_RETRIES} ]; do
                         echo "IPMI check attempt $((RETRY_COUNT + 1)) of ${MAX_RETRIES}..."
@@ -180,9 +195,8 @@ pipeline {
                     if [ ${IPMI_SUCCESS} -ne 1 ]; then
                         echo "OpenBMC did not start correctly or is not responding via IPMI after ${MAX_RETRIES} attempts."
                         echo "QEMU Log (qemu_openbmc.log):"
-                        cat qemu_openbmc.log
-                        if [ -f ${QEMU_PID_FILE} ];
-                        then
+                        cat qemu_openbmc.log || echo "Failed to cat qemu_openbmc.log"
+                        if [ -f ${QEMU_PID_FILE} ]; then
                             echo "Attempting to kill QEMU PID $(cat ${QEMU_PID_FILE})..."
                             sudo kill -9 $(cat ${QEMU_PID_FILE}) || echo "Failed to kill QEMU PID $(cat ${QEMU_PID_FILE}), or it wasn't running."
                         else
@@ -190,8 +204,8 @@ pipeline {
                         fi
                         exit 1
                     fi
-                    echo "OpenBMC seems to be running."
-                    set -e
+                    echo "OpenBMC seems to be running (IPMI responsive)."
+                    set -e 
                 '''
             }
         }
@@ -199,39 +213,43 @@ pipeline {
         stage('Verify Web Service Availability') {
             steps {
                 sh '''
-                    echo "Waiting an additional 60 seconds for web services to fully initialize..."
-                    sleep 60
+                    echo "Waiting an additional 90 seconds for web services (Redfish) to fully initialize..." 
+                    sleep 90
 
-                    echo "Attempting to connect to https://localhost:2443/redfish/v1/"
+                    echo "Attempting to connect to https://localhost:2443/redfish/v1/ ..."
                     RETRY_COUNT=0
-                    MAX_RETRIES=5
+                    MAX_RETRIES=6 
                     WEB_SVC_SUCCESS=0
                     while [ ${RETRY_COUNT} -lt ${MAX_RETRIES} ]; do
                         echo "Web service check attempt $((RETRY_COUNT + 1)) of ${MAX_RETRIES}..."
-                        # Using --insecure because OpenBMC uses self-signed certs
-                        # Using --head to only get headers, faster
-                        # Checking for HTTP status, expecting 200 for /redfish/v1/
-                        curl --head --silent --insecure --max-time 10 --output /dev/null --write-out "%{http_code}" https://localhost:2443/redfish/v1/ | grep -q "200"
-                        if [ $? -eq 0 ]; then
+                        HTTP_CODE=$(curl --head --silent --insecure --max-time 10 --output /dev/null --write-out "%{http_code}" https://localhost:2443/redfish/v1/)
+                        
+                        echo "Received HTTP_CODE: ${HTTP_CODE}"
+                        if [ "${HTTP_CODE}" = "200" ]; then
                             WEB_SVC_SUCCESS=1
                             echo "Web service responded with HTTP 200. Proceeding with tests."
                             break
                         fi
                         RETRY_COUNT=$((RETRY_COUNT + 1))
                         if [ ${RETRY_COUNT} -lt ${MAX_RETRIES} ]; then
-                            echo "Web service check failed or did not return HTTP 200. Retrying in 15 seconds..."
-                            sleep 15
+                            echo "Web service check failed (HTTP_CODE: ${HTTP_CODE}) or did not return HTTP 200. Retrying in 10 seconds..."
+                            sleep 10
                         else
-                            echo "Web service check failed on final attempt."
+                            echo "Web service check failed on final attempt (HTTP_CODE: ${HTTP_CODE})."
                         fi
                     done
 
                     if [ ${WEB_SVC_SUCCESS} -ne 1 ]; then
-                        echo "OpenBMC Web Service on port 2443 is not responding correctly after multiple attempts."
+                        echo "OpenBMC Web Service on port 2443 is not responding correctly with HTTP 200 after multiple attempts."
                         echo "QEMU Log (qemu_openbmc.log) for review:"
-                        cat qemu_openbmc.log
-                        # Decide if you want to exit the pipeline here or let tests fail
-                        # exit 1 
+                        cat qemu_openbmc.log || echo "Failed to cat qemu_openbmc.log"
+                        echo "Network interfaces on Jenkins agent:"
+                        ip addr
+                        echo "Listening ports on Jenkins agent (TCP):"
+                        ss -ltnp
+                        echo "Listening ports on Jenkins agent (UDP):"
+                        ss -lunp
+                        exit 1 
                     fi
                 '''
             }
@@ -241,9 +259,7 @@ pipeline {
             steps {
                 sh '''
                     . ${PYTHON_VENV}/bin/activate
-                    mkdir -p tests/api 
-                    cp test_redfish.py tests/api/ 
-                    pytest tests/api/test_redfish.py --junitxml=pytest_api_report.xml
+                    pytest test_redfish.py --junitxml=pytest_api_report.xml
                 '''
             }
             post {
@@ -258,15 +274,13 @@ pipeline {
             steps {
                 sh '''
                     . ${PYTHON_VENV}/bin/activate
-                    mkdir -p tests/webui
-                    cp openbmc_auth_tests.py tests/webui/
                     echo "Running WebUI tests..."
-                    python tests/webui/openbmc_auth_tests.py
+                    python openbmc_auth_tests.py
                 '''
             }
             post {
                 always {
-                    archiveArtifacts artifacts: 'test_report.html, qemu_openbmc.log', fingerprint: true
+                    archiveArtifacts artifacts: 'test_report.html, qemu_openbmc.log', fingerprint: true, allowEmptyArchive: true
                     publishHTML([allowMissing: true, alwaysLinkToLastBuild: false, keepAll: true, reportDir: '.', reportFiles: 'test_report.html', reportName: 'Selenium WebUI Report', reportTitles: ''])
                 }
             }
@@ -276,15 +290,13 @@ pipeline {
             steps {
                 sh '''
                     . ${PYTHON_VENV}/bin/activate
-                    mkdir -p tests/load
-                    cp locustfile.py tests/load/
                     echo "Starting Locust load test..."
-                    locust -f tests/load/locustfile.py --headless -u 10 -r 2 -t 30s --host=https://localhost:2443 --csv=locust_report --html=locust_report.html
+                    locust -f locustfile.py --headless -u 10 -r 2 -t 30s --host=https://localhost:2443 --csv=locust_report --html=locust_report.html
                 '''
             }
             post {
                 always {
-                    archiveArtifacts artifacts: 'locust_report_stats.csv, locust_report_stats_history.csv, locust_report.html, qemu_openbmc.log', fingerprint: true
+                    archiveArtifacts artifacts: 'locust_report_stats.csv, locust_report_stats_history.csv, locust_report.html, qemu_openbmc.log', fingerprint: true, allowEmptyArchive: true
                     publishHTML([allowMissing: true, alwaysLinkToLastBuild: false, keepAll: true, reportDir: '.', reportFiles: 'locust_report.html', reportName: 'Locust Load Test Report', reportTitles: ''])
                 }
             }
@@ -300,16 +312,24 @@ pipeline {
                         QEMU_PID_TO_KILL=$(cat ${QEMU_PID_FILE})
                         if [ -n "${QEMU_PID_TO_KILL}" ]; then
                             echo "Attempting to kill QEMU process with PID ${QEMU_PID_TO_KILL}..."
-                            sudo kill -9 ${QEMU_PID_TO_KILL} || echo "Failed to kill QEMU PID ${QEMU_PID_TO_KILL}, or it wasn't running."
+                            if ps -p ${QEMU_PID_TO_KILL} > /dev/null; then
+                                sudo kill -9 ${QEMU_PID_TO_KILL} || echo "Failed to kill QEMU PID ${QEMU_PID_TO_KILL} (it might have already exited)."
+                                echo "Killed QEMU PID ${QEMU_PID_TO_KILL}."
+                            else
+                                echo "QEMU PID ${QEMU_PID_TO_KILL} from ${QEMU_PID_FILE} was not found running."
+                            fi
+                            rm -f ${QEMU_PID_FILE} 
                         else
                             echo "No QEMU PID found in ${QEMU_PID_FILE}. Searching by process name..."
-                            sudo pkill -9 -f "qemu-system-arm -M romulus-bmc" || echo "pgrep kill attempt: QEMU process not found or already stopped."
+                            sudo pkill -9 -f "qemu-system-arm -M romulus-bmc" || echo "pkill attempt: QEMU process with 'qemu-system-arm -M romulus-bmc' not found or already stopped."
                         fi
                     else
                         echo "QEMU PID file (${QEMU_PID_FILE}) not found. Searching by process name..."
-                        sudo pkill -9 -f "qemu-system-arm -M romulus-bmc" || echo "pgrep kill attempt: QEMU process not found or already stopped."
+                        sudo pkill -9 -f "qemu-system-arm -M romulus-bmc" || echo "pkill attempt: QEMU process with 'qemu-system-arm -M romulus-bmc' not found or already stopped."
                     fi
                     echo "Cleanup attempt finished."
+                    echo "Final check for running QEMU processes:"
+                    ps aux | grep qemu-system-arm | grep -v grep || echo "No qemu-system-arm processes found."
                 '''
             }
         }
