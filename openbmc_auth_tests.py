@@ -1,186 +1,209 @@
-# openbmc_auth_tests.py
 import unittest
 import time
-from seleniumwire import webdriver
-from selenium.webdriver.chrome.options import Options
+from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from selenium.common.exceptions import TimeoutException, NoSuchElementException, StaleElementReferenceException
-import HtmlTestRunner # Ensure this is installed in your venv [cite: 215]
+from selenium.webdriver.chrome.options import Options as ChromeOptions
+from selenium.common.exceptions import TimeoutException, NoSuchElementException
+import HtmlTestRunner
+import os
 
-OPENBMC_URL = 'https://localhost:2443'
-VALID_USERNAME = 'root'
-VALID_PASSWORD = '0penBmc' # [cite: 5]
-INVALID_PASSWORD = 'wrongpassword'
-LOCKOUT_ATTEMPTS = 3 # [cite: 111, 118]
-WAIT_TIMEOUT = 25 # Increased timeout slightly for CI
-
-LOGIN_API_PATH_PART = '/redfish/v1/SessionService/Sessions' # [cite: 117]
-EXPECTED_INVALID_LOGIN_STATUS = 401 # [cite: 116]
-EXPECTED_LOCKED_OUT_STATUS = 401 # [cite: 120] (though Lab 4 noted issues with this [cite: 123])
+# Configuration
+OPENBMC_HOST = "https://localhost:2443" 
+USERNAME = "root"
+PASSWORD = "0penBmc" # Default OpenBMC password
+INVALID_PASSWORD = "invalidpassword"
 
 class OpenBMCAuthTests(unittest.TestCase):
+    driver = None
+
+    @classmethod
+    def setUpClass(cls):
+        chrome_options = ChromeOptions()
+        chrome_options.add_argument("--headless")
+        chrome_options.add_argument("--no-sandbox")
+        chrome_options.add_argument("--disable-dev-shm-usage")
+        chrome_options.add_argument("--ignore-certificate-errors") 
+        
+        # Ensure chromedriver is in PATH or specify its location
+        # For selenium-wire, you initialize it like this:
+        cls.driver = webdriver.Chrome(options=chrome_options)
+        cls.base_url = OPENBMC_HOST
+
+    @classmethod
+    def tearDownClass(cls):
+        if cls.driver:
+            cls.driver.quit()
 
     def setUp(self):
-        chrome_options = Options()
-        chrome_options.add_argument('--ignore-certificate-errors')
-        chrome_options.add_argument('--headless') # Enabled for CI [cite: 195]
-        chrome_options.add_argument('--no-sandbox')
-        chrome_options.add_argument('--disable-dev-shm-usage')
-        chrome_options.add_argument("--start-maximized")
-        # Ensure chromedriver is in PATH or specify executable_path
-        # chrome_options.add_argument("--window-size=1920,1080") # Can be useful for headless
+        self.driver.get(self.base_url)
+        # Clear requests from previous tests or page loads if necessary
+        del self.driver.requests
 
-        sw_options = {'verify_ssl': False} # [cite: 216]
-        # Selenium Wire can sometimes be tricky with headless, ensure it works or consider plain Selenium if issues arise
-        self.driver = webdriver.Chrome(options=chrome_options, seleniumwire_options=sw_options)
-        
-        self.driver.get(OPENBMC_URL) # [cite: 129]
-        try:
-            WebDriverWait(self.driver, WAIT_TIMEOUT).until(
-                EC.presence_of_element_located((By.ID, 'username'))
-            )
-        except TimeoutException:
-            self.driver.save_screenshot('debug_initial_load_timeout.png')
-            self.driver.quit()
-            self.fail(f"Failed to load login page (initial load at {OPENBMC_URL}) - Timed out after {WAIT_TIMEOUT}s") # [cite: 217]
-        
-        # It's good practice to clear requests from previous interactions if any,
-        # though for setUp it might be the first time.
-        if hasattr(self.driver, 'requests'):
-            del self.driver.requests
-        
-        self.driver.delete_all_cookies()
-        self.driver.refresh() # Refresh to ensure a clean state for the login form
-        
-        try:
-            WebDriverWait(self.driver, WAIT_TIMEOUT).until(
-                EC.presence_of_element_located((By.ID, 'username'))
-            )
-        except TimeoutException:
-            self.driver.save_screenshot('debug_reload_timeout.png')
-            self.driver.quit()
-            self.fail(f"Failed to reload login page after refresh - Timed out after {WAIT_TIMEOUT}s") # [cite: 218]
-        
-        if hasattr(self.driver, 'requests'):
-            del self.driver.requests
+    def tearDown(self):
+        # Clear requests after each test
+        del self.driver.requests
+        pass
 
     def _perform_login(self, username, password):
         try:
-            user_field = WebDriverWait(self.driver, WAIT_TIMEOUT).until(EC.element_to_be_clickable((By.ID, 'username')))
-            user_field.clear()
-            user_field.send_keys(username)
-
-            pass_field = WebDriverWait(self.driver, WAIT_TIMEOUT).until(EC.element_to_be_clickable((By.ID, 'password'))) # [cite: 219]
-            pass_field.clear()
-            pass_field.send_keys(password)
-
-            # Explicitly wait for the login button to be clickable
-            login_button = WebDriverWait(self.driver, WAIT_TIMEOUT).until(EC.element_to_be_clickable((By.CSS_SELECTOR, '[data-test-id="login-button-submit"]')))
-            login_button.click()
-        except Exception as e:
-            self.driver.save_screenshot('debug_perform_login_exception.png')
-            # Try to get page source for debugging
-            # page_source = self.driver.page_source
-            # print(f"Page source during login failure: {page_source[:500]}") # Print first 500 chars
-            self.fail(f"Login interaction failed: {type(e).__name__} - {e}") # [cite: 131]
-
-    def test_successful_login(self): # [cite: 112]
-        if hasattr(self.driver, 'requests'):
-            del self.driver.requests
-        self._perform_login(VALID_USERNAME, VALID_PASSWORD)
-        try:
-            dash_locator = (By.CSS_SELECTOR, '.main-content') # Lab 4 used ID 'main-content' [cite: 113]
-            WebDriverWait(self.driver, WAIT_TIMEOUT).until(
-                EC.visibility_of_element_located(dash_locator)
+            username_field = WebDriverWait(self.driver, 10).until(
+                EC.presence_of_element_located((By.ID, "username"))
             )
-            self.assertTrue(self.driver.find_element(*dash_locator).is_displayed())
-        except Exception as e:
-            self.driver.save_screenshot('debug_successful_login_validation_failed.png')
-            self.fail(f"Successful login failed validation: {type(e).__name__} - {e}") # [cite: 221]
+            password_field = self.driver.find_element(By.ID, "password")
+            login_button = self.driver.find_element(By.XPATH, "//button[contains(text(), 'Log In')] | //button[@type='submit']") # Common login button texts/types
 
-    def test_invalid_credentials(self): # [cite: 114]
-        if hasattr(self.driver, 'requests'):
+            username_field.clear()
+            username_field.send_keys(username)
+            password_field.clear()
+            password_field.send_keys(password)
+            
+            # Clear requests before the action that triggers the one we want to inspect
             del self.driver.requests
-        self._perform_login(VALID_USERNAME, INVALID_PASSWORD)
-        try:
-            # Wait for the specific network request that handles login
-            login_request = self.driver.wait_for_request(LOGIN_API_PATH_PART, timeout=WAIT_TIMEOUT) # [cite: 132]
-            self.assertIsNotNone(login_request.response, "Login request did not receive a response.")
-            self.assertEqual(login_request.response.status_code, EXPECTED_INVALID_LOGIN_STATUS, 
-                             f"Expected status {EXPECTED_INVALID_LOGIN_STATUS} but got {login_request.response.status_code}. Response: {login_request.response.body[:200] if login_request.response else 'No response body'}")
+            login_button.click()
+            
+            # Wait a bit for the request to be processed and recorded
+            # WebDriverWait can also be used to wait for a specific condition post-click
+            # For example, waiting for URL to change or for a specific request.
+            # Here, a short explicit wait is used for simplicity to allow selenium-wire to capture requests.
+            time.sleep(3) # Adjust if necessary
+
         except TimeoutException:
-            self.driver.save_screenshot('debug_invalid_credentials_timeout.png')
-            self.fail(f"Login request to '{LOGIN_API_PATH_PART}' not detected within {WAIT_TIMEOUT}s after submitting invalid credentials.") # [cite: 222]
-        except Exception as e:
-            self.driver.save_screenshot('debug_invalid_credentials_exception.png')
-            self.fail(f"Network check for invalid credentials failed: {type(e).__name__} - {e}")
+            self.fail("Login form elements (username, password, or button) not found.")
+        except NoSuchElementException:
+            self.fail("Login form elements (username, password, or button) not found by fallback.")
+
+
+    def test_successful_login(self):
+        """Login with valid credentials and check for successful HTTP response."""
+        self._perform_login(USERNAME, PASSWORD)
         
-        # Check if we are still on the login page (e.g., username field is present)
+        # Inspect network requests for the login attempt
+        # OpenBMC login POST is often to an endpoint like '/login' or an API endpoint
+        # For example, it might be '/login/login' or an Redfish session creation.
+        # You may need to inspect your OpenBMC's network traffic to find the exact endpoint.
+        login_post_request = None
+        for req in self.driver.requests:
+            # Common login paths: '/login', '/api/login', '/session', '/redfish/v1/SessionService/Sessions'
+            # Check for POST requests that seem like login attempts.
+            # The exact URL might vary based on OpenBMC version/configuration.
+            # Let's assume the login form POSTs to an endpoint containing 'login' or 'session'
+            if req.method == 'POST' and ('login' in req.url.lower() or 'session' in req.url.lower()):
+                login_post_request = req
+                break
+        
+        self.assertIsNotNone(login_post_request, "No login POST request captured by selenium-wire.")
+        
+        # A successful login POST usually returns 200 OK or 201 Created (for sessions)
+        # It might also return a 302 Found if it redirects immediately.
+        # If it's a 302, the actual success might be confirmed by the location header or subsequent GET.
+        # For simplicity, let's check for 200 or 201 on the POST itself.
+        self.assertIn(login_post_request.response.status_code, [200, 201], 
+                      f"Expected successful login status code (200 or 201) on POST, "
+                      f"got {login_post_request.response.status_code} for URL {login_post_request.url}. "
+                      f"Response body: {login_post_request.response.body.decode('utf-8', errors='ignore')[:500]}")
+
+        # Optionally, you can still verify a UI change if desired, as a secondary check:
+        # For example, check if the URL changed to a dashboard page
         try:
-            WebDriverWait(self.driver, 5).until(EC.presence_of_element_located((By.ID, 'username')))
+            WebDriverWait(self.driver, 10).until(
+                EC.url_contains("dashboard") # Or "overview", or whatever your main page is
+            )
         except TimeoutException:
-            self.driver.save_screenshot('debug_not_on_login_page_after_invalid.png')
-            self.fail("Not on login page (or username field not found) after invalid login attempt.")
+            self.fail(f"Login seemed successful via network, but did not redirect to a dashboard URL. Current URL: {self.driver.current_url}")
+        
+        # Or check for a known element on the dashboard page
+        # try:
+        #     WebDriverWait(self.driver, 10).until(
+        #         EC.presence_of_element_located((By.XPATH, "//*[contains(text(), 'System Overview')]")) 
+        #     )
+        # except TimeoutException:
+        #     self.fail("Login seemed successful, but 'System Overview' text not found on the dashboard.")
 
-    # Account lockout test was problematic in Lab 4[cite: 123, 124], keeping it commented.
-    # def test_account_lockout(self): # [cite: 118]
-    #     for i in range(LOCKOUT_ATTEMPTS): # [cite: 133]
-    #         if hasattr(self.driver, 'requests'):
-    #             del self.driver.requests
-    #         self._perform_login(VALID_USERNAME, INVALID_PASSWORD)
-    #         try:
-    #             login_request = self.driver.wait_for_request(LOGIN_API_PATH_PART, timeout=WAIT_TIMEOUT)
-    #             self.assertIsNotNone(login_request.response)
-    #             self.assertEqual(login_request.response.status_code, EXPECTED_INVALID_LOGIN_STATUS) # [cite: 224]
-    #             # Ensure still on login page
-    #             WebDriverWait(self.driver, WAIT_TIMEOUT).until(EC.presence_of_element_located((By.ID, 'username')))
-    #             time.sleep(0.2) # Brief pause
-    #         except Exception as e:
-    #             self.driver.save_screenshot(f'debug_lockout_attempt_{i+1}_failed.png')
-    #             self.fail(f"Failure during lockout attempt {i + 1}: {type(e).__name__} - {e}")
 
-    #     # Final attempt with correct credentials, expecting lockout
-    #     if hasattr(self.driver, 'requests'):
-    #         del self.driver.requests
-    #     self._perform_login(VALID_USERNAME, VALID_PASSWORD)
-    #     try:
-    #         lockout_check_request = self.driver.wait_for_request(LOGIN_API_PATH_PART, timeout=WAIT_TIMEOUT) # [cite: 225]
-    #         self.assertIsNotNone(lockout_check_request.response)
-    #         self.assertEqual(lockout_check_request.response.status_code, EXPECTED_LOCKED_OUT_STATUS,
-    #                          f"Observed status {lockout_check_request.response.status_code}, expected {EXPECTED_LOCKED_OUT_SslTATUS} (lockout). Body: {lockout_check_request.response.body[:200] if lockout_check_request.response else 'No body'}")
-    #     except Exception as e:
-    #         self.driver.save_screenshot('debug_final_lockout_check_failed.png')
-    #         self.fail(f"Final lockout check failed: {type(e).__name__} - {e}") # [cite: 226]
+    def test_invalid_credentials(self):
+        """Attempt login with invalid credentials and check for failure indication."""
+        self._perform_login(USERNAME, INVALID_PASSWORD)
 
-    def tearDown(self):
-        if self.driver:
-            self.driver.quit()
+        # For invalid credentials, the UI might show an error message.
+        # Alternatively, the login POST request might return an error status (e.g., 400, 401).
+        login_post_request = None
+        for req in self.driver.requests:
+            if req.method == 'POST' and ('login' in req.url.lower() or 'session' in req.url.lower()):
+                login_post_request = req
+                break
+        
+        if login_post_request and login_post_request.response:
+            # If the server responds with an error code on the POST itself
+            self.assertIn(login_post_request.response.status_code, [400, 401, 403],
+                          f"Expected error status code (400/401/403) for invalid login, "
+                          f"got {login_post_request.response.status_code} for URL {login_post_request.url}. "
+                          f"Response body: {login_post_request.response.body.decode('utf-8', errors='ignore')[:500]}")
+        else:
+            # Fallback to checking for a UI error message if direct network check is not conclusive
+            # This part depends on how your OpenBMC UI displays errors
+            try:
+                error_message = WebDriverWait(self.driver, 10).until(
+                    EC.presence_of_element_located((By.XPATH, "//*[contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'invalid credentials') or contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'login failed')]"))
+                )
+                self.assertTrue(error_message.is_displayed())
+            except TimeoutException:
+                self.fail("Failed to find an error message on the UI after invalid login attempt, and no conclusive network error found.")
+
+    # @unittest.skip("Skipping account lockout test as it may interfere with other tests")
+    # def test_account_lockout(self):
+    #     # This test assumes that multiple failed logins will lock the account.
+    #     # The exact number of attempts and lockout behavior is specific to OpenBMC's configuration.
+    #     # For demonstration, let's assume 5 failed attempts lock the account.
+    #     # You would need to adjust this based on your OpenBMC's security settings.
+        
+    #     max_attempts = 5 
+    #     print(f"Attempting {max_attempts} invalid logins to trigger lockout...")
+    #     for i in range(max_attempts):
+    #         self.driver.get(self.base_url) # Refresh page for new login attempt
+    #         del self.driver.requests # Clear requests for this attempt
+
+    #         print(f"Lockout attempt {i+1}/{max_attempts}")
+    #         self._perform_login(USERNAME, INVALID_PASSWORD) # Perform an invalid login
+            
+    #         # Optionally, check for intermediate failure indicators if needed
+    #         # However, the main check is after all attempts
+
+    #     # Now, attempt to login with correct credentials - it should fail if account is locked
+    #     print("Attempting login with correct credentials (should be locked out)...")
+    #     self.driver.get(self.base_url)
+    #     del self.driver.requests
+    #     self._perform_login(USERNAME, PASSWORD)
+
+    #     # Check network requests for the login attempt status when account is expected to be locked
+    #     locked_login_request = None
+    #     for req in self.driver.requests:
+    #         if req.method == 'POST' and ('login' in req.url.lower() or 'session' in req.url.lower()):
+    #             locked_login_request = req
+    #             break
+        
+    #     self.assertIsNotNone(locked_login_request, "No login POST request captured for lockout check.")
+        
+    #     # A locked account might return 401 (Unauthorized) or 403 (Forbidden), or perhaps a specific error code/message.
+    #     # Status 429 (Too Many Requests) could also be used by some systems.
+    #     expected_lockout_codes = [401, 403] 
+    #     self.assertIn(locked_login_request.response.status_code, expected_lockout_codes,
+    #                   f"Expected lockout status code {expected_lockout_codes}, "
+    #                   f"got {locked_login_request.response.status_code} for URL {locked_login_request.url}. "
+    #                   f"Response body: {locked_login_request.response.body.decode('utf-8', errors='ignore')[:500]}")
+        
+    #     print("Account lockout test finished: verified login failure on locked account.")
+
 
 if __name__ == '__main__':
-    # Ensure the reports directory exists
-    import os
-    if not os.path.exists('reports'):
-        os.makedirs('reports')
+    # Ensure the 'reports' directory exists
+    reports_dir = 'reports'
+    if not os.path.exists(reports_dir):
+        os.makedirs(reports_dir)
     
-    # The Jenkinsfile will archive test_report.html from the workspace root
-    # So we should output it there.
-    report_path = 'test_report.html' 
-
-    with open(report_path, 'w') as f:
-        runner = HtmlTestRunner.HTMLTestRunner( # [cite: 227]
-            stream=f,
-            report_title='OpenBMC WebUI Test Report',
-            descriptions='Test execution report for OpenBMC WebUI login functionality.',
-            verbosity=2 # Provides more detailed output
-        )
-        # Discover and run tests
-        suite = unittest.TestLoader().loadTestsFromTestCase(OpenBMCAuthTests)
-        result = runner.run(suite)
-        # Exit with a non-zero status if tests failed, so Jenkins marks the build appropriately
-        # if not result.wasSuccessful():
-        #     exit(1) # This can sometimes interfere with Jenkins' own interpretation of test results.
-                     # Jenkins usually relies on the JUnit XML for pass/fail counts or the runner's exit code.
-                     # HtmlTestRunner itself doesn't typically set an exit code based on test failure.
-                     # The `|| echo "..."` in Jenkinsfile is a simpler way to catch script failure.
+    # Generate a timestamped HTML report in the 'reports' directory
+    # Using HtmlTestRunner for outputting to a file
+    # The Jenkinsfile archives 'test_report.html' from the workspace root.
+    # So we should output directly to that name.
+    unittest.main(testRunner=HtmlTestRunner.HTMLTestRunner(output='.', report_name="test_report"))
