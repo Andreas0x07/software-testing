@@ -20,65 +20,89 @@ class OpenBMCAuthTests(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
+        print("Setting up OpenBMCAuthTests class...")
         chrome_options = ChromeOptions()
         chrome_options.add_argument("--headless")
         chrome_options.add_argument("--no-sandbox")
         chrome_options.add_argument("--disable-dev-shm-usage")
-        chrome_options.add_argument("--ignore-certificate-errors") 
+        chrome_options.add_argument("--ignore-certificate-errors") # Browser ignores cert errors from server
+        
+        # Selenium-wire specific options could be added here if needed, e.g.:
+        # sw_options = {
+        #     'verify_ssl': False  # Instructs selenium-wire's proxy to ignore SSL errors from upstream server
+        # }
+        # cls.driver = webdriver.Chrome(options=chrome_options, seleniumwire_options=sw_options)
         
         cls.driver = webdriver.Chrome(options=chrome_options)
         cls.base_url = OPENBMC_HOST
+        print("WebDriver initialized.")
 
     @classmethod
     def tearDownClass(cls):
+        print("Tearing down OpenBMCAuthTests class...")
         if cls.driver:
             cls.driver.quit()
+            print("WebDriver quit.")
 
     def setUp(self):
-        # It's important to get a fresh page for each test
+        print(f"\n--- Test: {self._testMethodName} ---")
+        # Clear requests from a previous test run, if any existed
+        if hasattr(self.driver, 'requests') and self.driver.requests:
+            print(f"Clearing {len(self.driver.requests)} requests from previous test.")
+            del self.driver.requests
+        
+        print(f"Navigating to base URL: {self.base_url}")
         self.driver.get(self.base_url)
-        # Clear requests from previous tests or page loads if necessary
+        # Allow time for page to load and selenium-wire to capture the initial request(s)
+        time.sleep(3) 
+        
+        if hasattr(self.driver, 'requests'):
+            print(f"Captured {len(self.driver.requests)} requests after navigating to base_url ({self.base_url}):")
+            if not self.driver.requests:
+                print("  No requests captured by selenium-wire for initial page load.")
+            for i, req in enumerate(self.driver.requests):
+                print(f"  Initial Nav Request #{i+1}: URL: {req.url}, Method: {req.method}, Status: {req.response.status_code if req.response else 'No resp'}")
+        else:
+            print("  self.driver does not have 'requests' attribute after initial get(). Selenium-wire might not be active.")
+
+        # Clear requests captured during page load, so we only see requests from login action
+        print("Clearing requests before performing login action...")
         del self.driver.requests
 
+
     def tearDown(self):
-        # Clear requests after each test
-        if hasattr(self.driver, 'requests'): # Check if requests were even initialized by an action
+        if hasattr(self.driver, 'requests') and self.driver.requests:
+            print(f"Clearing {len(self.driver.requests)} requests at end of {self._testMethodName}.")
             del self.driver.requests
-        pass
+        print(f"--- End Test: {self._testMethodName} ---")
+
 
     def _perform_login(self, username, password):
         try:
-            # Ensure we're on the login page, or at least a page where these elements exist
-            # self.driver.get(self.base_url + "/login") # Or whatever your login page path is, if not root
-            
             username_field = WebDriverWait(self.driver, 10).until(
                 EC.presence_of_element_located((By.ID, "username"))
             )
             password_field = self.driver.find_element(By.ID, "password")
-            # Try to find a common login button. You might need to adjust the XPath.
-            # Common patterns: <button type="submit">Log In</button>, <input type="submit" value="Log In">
-            # <button ...>Login</button> etc.
             login_button = self.driver.find_element(By.XPATH, "//button[contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'log in')] | //button[@type='submit'] | //input[@type='submit' and contains(translate(@value, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'log in')]")
-
 
             username_field.clear()
             username_field.send_keys(username)
             password_field.clear()
             password_field.send_keys(password)
             
-            # Clear requests right before the action that triggers the network call
-            del self.driver.requests
+            print("Clearing requests immediately before clicking login button...")
+            del self.driver.requests # Ensure we only capture post-click requests
+            
+            print("Clicking login button...")
             login_button.click()
             
-            # Wait for the request to be processed and recorded.
-            # Increased sleep slightly for debugging, can be optimized later.
-            print("Waiting for login request to be captured...")
+            print("Waiting for login action's network request to be captured...")
             time.sleep(5) 
 
         except TimeoutException:
-            self.fail(f"Login form elements (username, password, or button) not found on page {self.driver.current_url}. Check if you are on the correct login page.")
+            self.fail(f"Login form elements (username, password, or button) not found on page {self.driver.current_url}. Current page title: '{self.driver.title}'. Check if you are on the correct login page.")
         except NoSuchElementException:
-            self.fail(f"Login form elements (username, password, or button) not found by fallback on page {self.driver.current_url}.")
+            self.fail(f"Login form elements (username, password, or button) not found by fallback on page {self.driver.current_url}. Current page title: '{self.driver.title}'.")
 
 
     def test_successful_login(self):
@@ -86,34 +110,30 @@ class OpenBMCAuthTests(unittest.TestCase):
         print(f"Attempting successful login with user: {USERNAME}")
         self._perform_login(USERNAME, PASSWORD)
         
-        print(f"Captured {len(self.driver.requests)} requests during/after login attempt:")
+        if not hasattr(self.driver, 'requests'):
+            self.fail("self.driver has no 'requests' attribute after login attempt. Selenium-wire problem.")
+
+        print(f"Captured {len(self.driver.requests)} requests during/after successful login attempt:")
         if not self.driver.requests:
-            print("No requests were captured by selenium-wire at all.")
+            print("  No requests were captured by selenium-wire at all after login click.")
         
         login_post_request = None
         for i, req in enumerate(self.driver.requests):
-            print(f"Request #{i+1}: URL: {req.url}, Method: {req.method}, Status: {req.response.status_code if req.response else 'No response'}")
+            print(f"  Request #{i+1}: URL: {req.url}, Method: {req.method}, Status: {req.response.status_code if req.response else 'No response'}")
             if req.response and req.response.body:
                 try:
-                    # Limit printing of body to avoid huge logs
                     body_snippet = req.response.body.decode('utf-8', errors='ignore')[:200]
-                    print(f"  Response Body Snippet: {body_snippet}")
+                    print(f"    Response Body Snippet: {body_snippet}")
                 except Exception as e:
-                    print(f"  Error decoding/printing response body: {e}")
+                    print(f"    Error decoding/printing response body: {e}")
 
-            # --- ADJUST THIS CONDITION ---
-            # This is the condition we are trying to get right.
-            # You need to find the actual login submission request.
-            # Example: Check if it's a POST to a specific path like '/login/submit' or '/api/v1/session'
-            if req.method == 'POST' and ('login' in req.url.lower() or 'session' in req.url.lower() or 'token' in req.url.lower()): # Added 'token' as another common keyword
+            if req.method == 'POST' and ('login' in req.url.lower() or 'session' in req.url.lower() or 'token' in req.url.lower() or '/api/account/login' in req.url): # More specific example
                 login_post_request = req
-                print(f"*** Identified potential login POST request: {req.url} ***")
-                break # Found a candidate
+                print(f"  *** Identified potential login POST request: {req.url} ***")
+                break 
         
-        self.assertIsNotNone(login_post_request, "No suitable login POST request (containing 'login', 'session', or 'token' in URL) captured by selenium-wire. Check printed requests above.")
+        self.assertIsNotNone(login_post_request, "No suitable login POST request captured. Check printed requests above to identify the correct one and adjust the condition.")
         
-        # A successful login POST usually returns 200 OK or 201 Created (for sessions)
-        # It might also return a 302 Found if it redirects immediately.
         self.assertIn(login_post_request.response.status_code, [200, 201], 
                       f"Expected successful login status code (200 or 201) on POST {login_post_request.url}, "
                       f"got {login_post_request.response.status_code}. "
@@ -121,11 +141,8 @@ class OpenBMCAuthTests(unittest.TestCase):
 
         print(f"Successful login POST to {login_post_request.url} confirmed with status {login_post_request.response.status_code}.")
 
-        # Optional: Verify UI change (e.g., URL or element on dashboard)
         try:
-            WebDriverWait(self.driver, 10).until(
-                EC.url_contains("dashboard") # Or "overview", or other part of your post-login URL
-            )
+            WebDriverWait(self.driver, 10).until(EC.url_contains("dashboard"))
             print(f"Redirected to URL containing 'dashboard': {self.driver.current_url}")
         except TimeoutException:
             self.fail(f"Login network call successful, but did not redirect to a 'dashboard' URL. Current URL: {self.driver.current_url}")
@@ -136,13 +153,19 @@ class OpenBMCAuthTests(unittest.TestCase):
         print(f"Attempting invalid login with user: {USERNAME}")
         self._perform_login(USERNAME, INVALID_PASSWORD)
 
+        if not hasattr(self.driver, 'requests'):
+            self.fail("self.driver has no 'requests' attribute after invalid login attempt. Selenium-wire problem.")
+
         login_post_request = None
         print(f"Captured {len(self.driver.requests)} requests during/after invalid login attempt:")
+        if not self.driver.requests:
+            print("  No requests were captured by selenium-wire at all after invalid login click.")
+
         for i, req in enumerate(self.driver.requests):
-            print(f"Request #{i+1} (invalid login): URL: {req.url}, Method: {req.method}, Status: {req.response.status_code if req.response else 'No response'}")
-            if req.method == 'POST' and ('login' in req.url.lower() or 'session' in req.url.lower() or 'token' in req.url.lower()):
+            print(f"  Request #{i+1} (invalid login): URL: {req.url}, Method: {req.method}, Status: {req.response.status_code if req.response else 'No response'}")
+            if req.method == 'POST' and ('login' in req.url.lower() or 'session' in req.url.lower() or 'token' in req.url.lower() or '/api/account/login' in req.url):
                 login_post_request = req
-                print(f"*** Identified potential invalid login POST request: {req.url} ***")
+                print(f"  *** Identified potential invalid login POST request: {req.url} ***")
                 break
         
         if login_post_request and login_post_request.response:
@@ -152,19 +175,16 @@ class OpenBMCAuthTests(unittest.TestCase):
                           f"Response body: {login_post_request.response.body.decode('utf-8', errors='ignore')[:500]}")
             print(f"Invalid login POST to {login_post_request.url} correctly received error status {login_post_request.response.status_code}.")
         else:
-            print("No specific login POST request found for invalid login, or no response. Checking UI for error message.")
+            print("No specific login POST request found for invalid login, or no error response via network. Checking UI for error message.")
             try:
                 error_message = WebDriverWait(self.driver, 10).until(
                     EC.presence_of_element_located((By.XPATH, "//*[contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'invalid credentials') or contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'login failed') or contains(@class, 'error') or contains(@role, 'alert')]"))
-                ) # Added more generic error selectors
+                )
                 self.assertTrue(error_message.is_displayed())
                 print(f"Found UI error message for invalid login: {error_message.text}")
             except TimeoutException:
-                self.fail("Failed to find an error message on the UI after invalid login attempt, and no conclusive network error found.")
+                self.fail("Failed to find an error message on the UI after invalid login attempt, AND no conclusive network error was found/identified.")
 
-    # @unittest.skip("Skipping account lockout test as it may interfere with other tests")
-    # def test_account_lockout(self):
-    #    pass # Keep your existing code if you plan to use it
 
 if __name__ == '__main__':
     reports_dir = 'reports'
