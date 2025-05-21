@@ -120,11 +120,10 @@ pipeline {
                         ACTUAL_CMD=$(ps -o args= -p ${QEMU_NOHUP_PID})
                         echo "Command for PID ${QEMU_NOHUP_PID}: ${ACTUAL_CMD}"
                         
-                        # MODIFIED CONDITION HERE
                         if echo "${ACTUAL_CMD}" | grep -q "qemu-system-arm" && \
                            echo "${ACTUAL_CMD}" | grep -q -- "-M romulus-bmc" && \
                            echo "${ACTUAL_CMD}" | grep -q -- "-nographic" && \
-                           echo "${ACTUAL_CMD}" | grep -q -- "-drive.*${OPENBMC_IMAGE_FILE}"; then # <-- MODIFIED LINE
+                           echo "${ACTUAL_CMD}" | grep -q -- "-drive.*${OPENBMC_IMAGE_FILE}"; then
                             echo "Command for PID ${QEMU_NOHUP_PID} matches expected QEMU process."
                             QEMU_ACTUAL_PID=${QEMU_NOHUP_PID}
                         else
@@ -154,13 +153,32 @@ pipeline {
                     echo "QEMU confirmed running with PID ${QEMU_ACTUAL_PID}. Storing to ${QEMU_PID_FILE}."
                     echo ${QEMU_ACTUAL_PID} > ${QEMU_PID_FILE}
 
-                    echo "Waiting for OpenBMC to boot (90 seconds)..."
-                    sleep 90
+                    echo "Waiting for OpenBMC to boot (150 seconds initial wait)..." # Increased wait time
+                    sleep 150
                     
-                    echo "Verifying OpenBMC IPMI responsiveness..."
-                    ipmitool -I lanplus -H 127.0.0.1 -p 2623 -U root -P 0penBmc -R 5 -N 10 chassis power status
-                    if [ $? -ne 0 ]; then
-                        echo "OpenBMC did not start correctly or is not responding via IPMI."
+                    echo "Verifying OpenBMC IPMI responsiveness with retries..."
+                    RETRY_COUNT=0
+                    MAX_RETRIES=5 # Try up to 5 times (total additional wait up to 4*15 = 60 seconds)
+                    IPMI_SUCCESS=0
+                    while [ ${RETRY_COUNT} -lt ${MAX_RETRIES} ]; do
+                        echo "IPMI check attempt $((RETRY_COUNT + 1)) of ${MAX_RETRIES}..."
+                        ipmitool -I lanplus -H 127.0.0.1 -p 2623 -U root -P 0penBmc -R 5 -N 10 chassis power status
+                        if [ $? -eq 0 ]; then
+                            IPMI_SUCCESS=1
+                            echo "IPMI check successful."
+                            break
+                        fi
+                        RETRY_COUNT=$((RETRY_COUNT + 1))
+                        if [ ${RETRY_COUNT} -lt ${MAX_RETRIES} ]; then
+                            echo "IPMI check failed. Retrying in 15 seconds..."
+                            sleep 15
+                        else
+                            echo "IPMI check failed on final attempt."
+                        fi
+                    done
+
+                    if [ ${IPMI_SUCCESS} -ne 1 ]; then
+                        echo "OpenBMC did not start correctly or is not responding via IPMI after ${MAX_RETRIES} attempts."
                         echo "QEMU Log (qemu_openbmc.log):"
                         cat qemu_openbmc.log
                         if [ -f ${QEMU_PID_FILE} ];
