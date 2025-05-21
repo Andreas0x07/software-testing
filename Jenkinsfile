@@ -413,6 +413,12 @@ pipeline {
                         rm -f ${PERF_PID_FILE}
                     fi
 
+                    # Change ownership of perf.data to jenkins user before archiving
+                    if [ -f "${PERF_DATA}" ]; then
+                        echo "Changing ownership of ${PERF_DATA} to jenkins:jenkins..."
+                        sudo chown jenkins:jenkins "${PERF_DATA}" || echo "Failed to change ownership of ${PERF_DATA}."
+                    fi
+
                     # Existing QEMU cleanup logic
                     if [ -f ${QEMU_PID_FILE} ]; then
                         QEMU_PID_TO_KILL=$(cat ${QEMU_PID_FILE})
