@@ -395,15 +395,20 @@ pipeline {
                         PERF_PARENT_PID=$(cat ${PERF_PID_FILE})
                         echo "Attempting to stop perf record (parent PID: ${PERF_PARENT_PID})..."
                         # Find potential child perf processes and kill them
-                        PERF_CHILD_PIDS=$(pgrep -P ${PERF_PARENT_PID} perf)
+                        # Use || true to prevent script failure if no child processes are found
+                        PERF_CHILD_PIDS=$(pgrep -P ${PERF_PARENT_PID} perf || true)
                         if [ -n "${PERF_CHILD_PIDS}" ]; then
                             echo "Killing perf child processes: ${PERF_CHILD_PIDS}"
                             sudo kill -SIGINT ${PERF_CHILD_PIDS} || echo "Failed to kill perf child PIDs."
                             sleep 2 # Give time for data flushing
+                        else
+                            echo "No active perf child processes found for parent PID ${PERF_PARENT_PID}."
                         fi
                         # Kill the parent perf process too if it's still running
                         if ps -p ${PERF_PARENT_PID} > /dev/null; then
                             sudo kill -SIGINT ${PERF_PARENT_PID} || echo "Failed to kill perf parent PID ${PERF_PARENT_PID}."
+                        else
+                            echo "Perf parent process with PID ${PERF_PARENT_PID} not found running."
                         fi
                         rm -f ${PERF_PID_FILE}
                     fi
