@@ -157,19 +157,11 @@ pipeline {
                     sleep 15 # Increased sleep to allow QEMU to fully start under perf
 
                     QEMU_ACTUAL_PID=""
-                    # Try to find the QEMU process itself, which is a child of perf.
-                    # The command for pgrep needs to be specific to avoid matching other qemu instances.
-                    # The OPENBMC_IMAGE_FILENAME is crucial here.
                     QEMU_PGREP_PID=$(pgrep -f "qemu-system-arm -M romulus-bmc -nographic -drive file=${OPENBMC_IMAGE_FILENAME}")
 
                     if [ -n "${QEMU_PGREP_PID}" ]; then
-                        # In case pgrep returns multiple PIDs (e.g., threads), take the first one.
-                        # This assumes the main QEMU process matches this pattern.
                         QEMU_ACTUAL_PID=$(echo ${QEMU_PGREP_PID} | awk '{print $1}')
                         echo "QEMU process found via pgrep with PID ${QEMU_ACTUAL_PID}."
-                        # Verify it's a child of the nohup'd perf process if possible, for added certainty (optional)
-                        # PERF_PID_FROM_QEMU_PARENT=$(ps -o ppid= -p ${QEMU_ACTUAL_PID} | xargs)
-                        # echo "QEMU's parent PID is ${PERF_PID_FROM_QEMU_PARENT}. Perf's PID was ${PERF_QEMU_NOHUP_PID}."
                     else
                         echo "Could not find QEMU process via pgrep after starting with perf."
                         echo "Perf/QEMU Log (${QEMU_LOG}) content:"
@@ -268,7 +260,6 @@ pipeline {
                         echo "OpenBMC Web Service on port 2443 is NOT considered available after multiple attempts."
                         echo "QEMU Log (${QEMU_LOG}) for review:"
                         cat ${QEMU_LOG} || echo "Failed to cat ${QEMU_LOG}"
-                        # ... (rest of debugging commands from original Jenkinsfile)
                         exit 1
                     fi
                 '''
@@ -357,42 +348,33 @@ pipeline {
                     . ${PYTHON_VENV}/bin/activate
                     
                     echo "Starting profiling tools (vmstat, nmon)..."
-                    # vmstat: interval 1s, count 70 (for 60s test + buffer). Output in MB.
                     vmstat -S M 1 70 > ${VMSTAT_OUTPUT} &
                     VMSTAT_PID=$!
                     echo "vmstat started with PID ${VMSTAT_PID}"
 
-                    rm -rf ${NMON_REPORTS_DIR}/*.nmon # Clean up old nmon files
+                    rm -rf ${NMON_REPORTS_DIR}/*.nmon 
                     mkdir -p ${NMON_REPORTS_DIR}
-                    # nmon: snapshot every 5s, 15 snapshots (75s duration), -f for spreadsheet format, -T for top procs
-                    # Naming: -N (net), -D (disk), -K (kernel), -U (util)
                     nmon -f -s 5 -c 15 -T -N -D -K -U -m ./${NMON_REPORTS_DIR} &
                     NMON_PID=$!
                     echo "nmon started with PID ${NMON_PID}"
                     
                     echo "Starting Locust load test..."
-                    locust -f locustfile.py --headless -u 2 -r 1 -t 60s --host=https://localhost:2443 --csv=locust_report --html=locust_report.html
+                    locust -f locustfile.py --headless -u 10 -r 2 -t 60s --host=https://localhost:2443 --csv=locust_report --html=locust_report.html
                     
                     echo "Load test finished. Waiting for profiling tools to complete..."
-                    # Wait for vmstat to finish (it runs for a fixed count)
                     if ps -p ${VMSTAT_PID} > /dev/null; then wait ${VMSTAT_PID} || echo "vmstat already finished"; fi
                     echo "vmstat finished."
-                    
-                    # nmon runs in background and stops after -c count.
-                    # Give it a few more seconds to ensure it finishes writing its file.
                     sleep 10 
                     if ps -p ${NMON_PID} > /dev/null; then 
                         echo "Nmon process ${NMON_PID} still running, sending SIGUSR2 to stop."
                         sudo kill -SIGUSR2 ${NMON_PID} || echo "Failed to send SIGUSR2 to nmon, or it already stopped."
-                        sleep 2 # Give nmon time to react to SIGUSR2
+                        sleep 2 
                         if ps -p ${NMON_PID} > /dev/null; then
                            echo "Nmon ${NMON_PID} did not stop with SIGUSR2, using SIGTERM."
                            sudo kill -SIGTERM ${NMON_PID} || echo "Nmon already stopped."
                         fi
                     fi
                     echo "nmon should be finished."
-                    
-                    # List nmon files generated
                     echo "NMON files generated in ./${NMON_REPORTS_DIR}:"
                     ls -l ./${NMON_REPORTS_DIR}
                 '''
@@ -445,42 +427,56 @@ pipeline {
     post {
         always {
             script {
-                // Archive perf_stat_output.log here, as it's generated after QEMU (and perf) stop.
-                // This requires QEMU to be stopped first.
                 sh '''
                     echo "Pipeline finished. Cleaning up QEMU..."
                     QEMU_PID_TO_KILL=""
                     PERF_PID_TO_KILL=""
 
                     if [ -f ${QEMU_PID_FILE} ]; then
-                        QEMU_PID_FROM_FILE=$(cat ${QEMU_PID_FILE})
-                        if [ -n "${QEMU_PID_FROM_FILE}" ] && ps -p ${QEMU_PID_FROM_FILE} > /dev/null; then
+                        QEMU_PID_FROM_FILE=$(cat ${QEMU_PID_FILE} | xargs) # Ensure no whitespace
+                        if [ -n "${QEMU_PID_FROM_FILE}" ] && ps -p "${QEMU_PID_FROM_FILE}" > /dev/null; then
                             QEMU_PID_TO_KILL=${QEMU_PID_FROM_FILE}
-                            # Try to find the parent perf process to kill it first, so it generates its report
-                            PERF_PID_TO_KILL=$(ps -o ppid= -p ${QEMU_PID_TO_KILL} | xargs)
+                            # Get parent PID (should be perf)
+                            PERF_PID_CANDIDATE=$(ps -o ppid= -p "${QEMU_PID_TO_KILL}" | xargs)
+                            if [ -n "${PERF_PID_CANDIDATE}" ] && ps -p "${PERF_PID_CANDIDATE}" > /dev/null; then
+                                # Check if the parent is indeed 'perf'
+                                if [ "$(ps -o comm= -p ${PERF_PID_CANDIDATE})" = "perf" ]; then
+                                    PERF_PID_TO_KILL=${PERF_PID_CANDIDATE}
+                                    echo "Identified QEMU PID: ${QEMU_PID_TO_KILL} and its Perf parent PID: ${PERF_PID_TO_KILL}"
+                                else
+                                    echo "Parent of QEMU PID ${QEMU_PID_TO_KILL} is ${PERF_PID_CANDIDATE} ($(ps -o comm= -p ${PERF_PID_CANDIDATE})), not 'perf'. Perf might have already exited or QEMU was not started by perf as expected."
+                                fi
+                            else
+                                echo "Could not determine parent PID for QEMU PID ${QEMU_PID_TO_KILL} or parent not running."
+                            fi
+                        else
+                            echo "QEMU PID from file (${QEMU_PID_FROM_FILE}) not running or file was empty/invalid."
                         fi
+                    else
+                        echo "${QEMU_PID_FILE} not found."
                     fi
                     
-                    # If we have a perf PID, try to kill it gracefully first then forcefully
-                    if [ -n "${PERF_PID_TO_KILL}" ] && ps -p ${PERF_PID_TO_KILL} > /dev/null && \
-                       [ "$(ps -o comm= -p ${PERF_PID_TO_KILL})" = "perf" ]; then
-                        echo "Attempting to kill perf process with PID ${PERF_PID_TO_KILL} (parent of QEMU)..."
-                        sudo kill -SIGINT ${PERF_PID_TO_KILL} # Perf should handle SIGINT and write its file
-                        sleep 5 # Give perf time to write the file
+                    if [ -n "${PERF_PID_TO_KILL}" ]; then
+                        echo "Attempting to kill perf process with PID ${PERF_PID_TO_KILL} (parent of QEMU) with SIGINT..."
+                        sudo kill -SIGINT ${PERF_PID_TO_KILL} 
+                        sleep 5 
                         if ps -p ${PERF_PID_TO_KILL} > /dev/null; then
                             echo "Perf process ${PERF_PID_TO_KILL} still running, using SIGKILL."
                             sudo kill -9 ${PERF_PID_TO_KILL}
                         fi
-                        echo "Perf process ${PERF_PID_TO_KILL} stopped."
+                        echo "Perf process ${PERF_PID_TO_KILL} expected to be stopped."
+                        # QEMU (child) should also terminate when its parent perf is killed. Double check.
+                        if [ -n "${QEMU_PID_TO_KILL}" ] && ps -p ${QEMU_PID_TO_KILL} > /dev/null; then
+                            echo "QEMU process ${QEMU_PID_TO_KILL} still running after perf kill. Killing QEMU directly."
+                            sudo kill -9 ${QEMU_PID_TO_KILL}
+                        fi
                     elif [ -n "${QEMU_PID_TO_KILL}" ]; then
-                        # If no clear perf PID, or if it was the same as QEMU (should not happen with current setup)
-                        # just kill QEMU. Perf might not generate a report cleanly in this edge case.
-                        echo "Attempting to kill QEMU process directly with PID ${QEMU_PID_TO_KILL}..."
+                        echo "Perf parent not cleanly identified or already stopped. Attempting to kill QEMU process directly with PID ${QEMU_PID_TO_KILL}..."
                         sudo kill -9 ${QEMU_PID_TO_KILL}
                         echo "Killed QEMU PID ${QEMU_PID_TO_KILL}."
                     else
-                        echo "No specific QEMU or Perf PID found from ${QEMU_PID_FILE}. Searching by process name..."
-                        sudo pkill -SIGINT -f "perf stat -o ${PERF_STAT_OUTPUT}.*qemu-system-arm" # Try to stop perf gracefully
+                        echo "No specific QEMU or Perf PID found from ${QEMU_PID_FILE}. Searching by process name as a fallback..."
+                        sudo pkill -SIGINT -f "perf stat -o ${PERF_STAT_OUTPUT}.*qemu-system-arm" 
                         sleep 2
                         sudo pkill -9 -f "qemu-system-arm -M romulus-bmc" || echo "pkill attempt: QEMU process not found or already stopped."
                         sudo pkill -9 -f "perf stat -o ${PERF_STAT_OUTPUT}" || echo "pkill attempt: Perf process not found or already stopped."
@@ -488,7 +484,6 @@ pipeline {
                     
                     rm -f ${QEMU_PID_FILE}
                     echo "Cleanup attempt finished."
-                    
                     echo "Final check for running QEMU/Perf processes:"
                     ps aux | grep -E "qemu-system-arm|perf stat" | grep -v grep || echo "No relevant qemu-system-arm or perf stat processes found."
                 '''
