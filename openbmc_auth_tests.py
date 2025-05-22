@@ -16,13 +16,13 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(level
 logger = logging.getLogger(__name__)
 
 selenium_wire_logger = logging.getLogger('seleniumwire')
-selenium_wire_logger.setLevel(logging.INFO) # Changed to INFO from DEBUG for less verbose logs unless debugging
+selenium_wire_logger.setLevel(logging.INFO)
 
 OPENBMC_HOST = "https://localhost:2443"
 USERNAME = "root"
 PASSWORD = "0penBmc"
 INVALID_PASSWORD = "invalidpassword"
-LOGIN_URL_PATH = "/login" # This is the XHR path your script targets for login requests
+LOGIN_URL_PATH = "/login"
 
 class OpenBMCAuthTests(unittest.TestCase):
     driver = None
@@ -42,8 +42,16 @@ class OpenBMCAuthTests(unittest.TestCase):
         sw_options = {'verify_ssl': False, 'disable_capture': False}
         cls.driver = webdriver.Chrome(options=chrome_options, seleniumwire_options=sw_options)
         logger.info("WebDriver (Selenium Wire) initialized.")
-        if hasattr(cls.driver, 'backend') and hasattr(cls.driver.backend, 'master'):
-            logger.info(f"Selenium Wire proxy seems to be running on: {cls.driver.backend.master.address}")
+        
+        # Updated logging for proxy address
+        if hasattr(cls.driver.backend, 'master') and hasattr(cls.driver.backend.master, 'options'):
+            host = cls.driver.backend.master.options.listen_host
+            port = cls.driver.backend.master.options.listen_port
+            logger.info(f"Selenium Wire proxy (mitmproxy) is listening on: {host}:{port}")
+        elif hasattr(cls.driver, 'proxy') and cls.driver.proxy: # Fallback if above not found
+             logger.info(f"Selenium Wire proxy is active. Details: {cls.driver.proxy}")
+        else:
+            logger.info("Selenium Wire proxy is active, but specific address details via master.options were not retrieved.")
 
     @classmethod
     def tearDownClass(cls):
@@ -83,7 +91,7 @@ class OpenBMCAuthTests(unittest.TestCase):
 
             login_button.click()
             logger.info(f"Clicked login button with user: {username}.")
-            time.sleep(1) # Brief pause for XHR
+            time.sleep(1) 
         except Exception as e:
             logger.error(f"Error during login interaction: {e}", exc_info=True)
             self.fail(f"Error during login interaction: {e}")
@@ -167,7 +175,7 @@ if __name__ == '__main__':
     suite = loader.loadTestsFromTestCase(OpenBMCAuthTests)
 
     output_dir = "selenium_reports"
-    report_filename = "selenium_webui_report" # Name for the report file (without .html)
+    report_filename = "selenium_webui_report" 
     report_file_path = os.path.join(output_dir, f"{report_filename}.html")
 
     if not os.path.exists(output_dir):
@@ -181,7 +189,7 @@ if __name__ == '__main__':
             report_name=report_filename,
             report_title='OpenBMC WebUI Auth Test Report',
             verbosity=2,
-            add_timestamp=False # Ensures a consistent filename
+            add_timestamp=False 
         )
         test_result = runner.run(suite)
     except Exception as e:
@@ -192,7 +200,6 @@ if __name__ == '__main__':
             logger.info(f"SUCCESS: Report file was created at {report_file_path}. Size: {os.path.getsize(report_file_path)} bytes.")
         else:
             logger.error(f"FAILURE: Report file NOT found or is empty at {report_file_path}.")
-            # Create a placeholder if report generation failed catastrophically
             if not os.path.exists(output_dir): os.makedirs(output_dir)
             with open(report_file_path, 'w') as f:
                 f.write("<html><body><h1>Report Generation Failed or No Tests Were Run</h1></body></html>")
@@ -201,9 +208,9 @@ if __name__ == '__main__':
     if test_result and not test_result.wasSuccessful():
         logger.error("One or more tests FAILED. Exiting with status 1.")
         sys.exit(1)
-    elif not test_result: # If runner itself failed or no result object
+    elif not test_result: 
         logger.error("Test result object not obtained (runner might have failed). Exiting with status 2.")
         sys.exit(2)
-    else: # All tests passed
+    else: 
         logger.info("All tests passed. Exiting with status 0.")
         sys.exit(0)
