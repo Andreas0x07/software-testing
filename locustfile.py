@@ -32,7 +32,7 @@ class OpenBMCUser(HttpUser):
             )
             if response.status_code not in (200, 201):
                 logger.error(f"OpenBMCUser: Session creation failed: {response.status_code}, Response text: {response.text}")
-                self.token = None # Ensure token is None if creation fails
+                self.token = None
                 return
             self.token = response.headers.get("X-Auth-Token")
             if not self.token:
@@ -41,7 +41,7 @@ class OpenBMCUser(HttpUser):
                 logger.info("OpenBMCUser: Session token created successfully")
         except Exception as e:
             logger.error(f"OpenBMCUser: Error creating session: {e}")
-            self.token = None # Ensure token is None on exception
+            self.token = None
 
     @task
     def get_system_info(self):
@@ -66,8 +66,7 @@ class OpenBMCUser(HttpUser):
                     response.failure(f"Status code {response.status_code}")
         except Exception as e:
             logger.error(f"OpenBMCUser: Error during Get System Info: {e}")
-            # Manually report failure if an exception occurs that prevents getting a response object
-            if hasattr(self, 'environment'): # Check if environment is available
+            if hasattr(self, 'environment'):
                  self.environment.events.request.fire(
                     request_type="GET",
                     name="Get System Info",
