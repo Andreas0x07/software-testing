@@ -371,8 +371,6 @@ pipeline {
                     . ${PYTHON_VENV}/bin/activate
                     echo "Starting Locust load test..."
                     
-                    # Start perf stat in the background to monitor QEMU during the locust test
-                    # It will run for approximately the duration of the locust test (60s + a bit of buffer)
                     echo "Starting perf stat for QEMU PID $(cat ${QEMU_PID_FILE}) for 70 seconds..."
                     nohup sudo perf stat -e cycles,instructions,cache-misses -p $(cat ${QEMU_PID_FILE}) -o ${PERF_STAT_LOG} sleep 70 &
                     PERF_STAT_BG_PID=$!
@@ -397,6 +395,17 @@ pipeline {
             }
             post {
                 always {
+                    script { // Added script block to run shell commands first
+                        sh '''
+                            echo "Changing ownership of perf.data and perf_stat_output.log before archiving/publishing in Load Test stage..."
+                            if [ -f "${PERF_DATA}" ]; then
+                                sudo chown jenkins:jenkins "${PERF_DATA}" || echo "Warning: Failed to chown ${PERF_DATA} in Load Test stage post-script"
+                            fi
+                            if [ -f "${PERF_STAT_LOG}" ]; then
+                                sudo chown jenkins:jenkins "${PERF_STAT_LOG}" || echo "Warning: Failed to chown ${PERF_STAT_LOG} in Load Test stage post-script"
+                            fi
+                        '''
+                    }
                     archiveArtifacts artifacts: "locust_report_stats.csv, locust_report_stats_history.csv, locust_report.html, qemu_openbmc.log, ${PERF_STAT_LOG}", fingerprint: true, allowEmptyArchive: true
                     publishHTML([
                         allowMissing: true, 
@@ -458,16 +467,16 @@ pipeline {
                         rm -f ${PERF_PID_FILE}
                     fi
 
-                    # Change ownership of perf.data to jenkins user before archiving
+                    # Change ownership of perf.data to jenkins user before archiving (still useful here as a fallback)
                     if [ -f "${PERF_DATA}" ]; then
-                        echo "Changing ownership of ${PERF_DATA} to jenkins:jenkins..."
-                        sudo chown jenkins:jenkins "${PERF_DATA}" || echo "Failed to change ownership of ${PERF_DATA}."
+                        echo "Changing ownership of ${PERF_DATA} to jenkins:jenkins (final post block)..."
+                        sudo chown jenkins:jenkins "${PERF_DATA}" || echo "Warning: Failed to change ownership of ${PERF_DATA} (final post block)."
                     fi
                     
-                    # Change ownership of perf_stat.log if it exists
+                    # Change ownership of perf_stat.log if it exists (still useful here as a fallback)
                     if [ -f "${PERF_STAT_LOG}" ]; then
-                        echo "Changing ownership of ${PERF_STAT_LOG} to jenkins:jenkins..."
-                        sudo chown jenkins:jenkins "${PERF_STAT_LOG}" || echo "Failed to change ownership of ${PERF_STAT_LOG}."
+                        echo "Changing ownership of ${PERF_STAT_LOG} to jenkins:jenkins (final post block)..."
+                        sudo chown jenkins:jenkins "${PERF_STAT_LOG}" || echo "Warning: Failed to change ownership of ${PERF_STAT_LOG} (final post block)."
                     fi
 
 
@@ -509,7 +518,7 @@ pipeline {
                     echo "Final check for running QEMU processes:"
                     ps aux | grep qemu-system-arm | grep -v grep || echo "No qemu-system-arm processes found."
                 '''
-                // Archive the new profiling artifacts
+                // Archive the main profiling artifacts
                 archiveArtifacts artifacts: "${VMSTAT_LOG}, ${NMON_OUT_DIR}/nmon_*.nmon, ${PERF_DATA}, ${QEMU_MEMORY_LOG}, ${PERF_STAT_LOG}", allowEmptyArchive: true, fingerprint: true
             }
         }
