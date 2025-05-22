@@ -92,11 +92,11 @@ pipeline {
                 sh '''
                     echo "Downloading OpenBMC Romulus image..."
                     wget -nv "${OPENBMC_IMAGE_URL}" -O romulus.zip
-                         
+                    
                     echo "Cleaning up old OpenBMC image directory..."
                     rm -rf ./${ROMULUS_DIR}
                     mkdir ./${ROMULUS_DIR}
-                      
+                    
                     echo "Unzipping Romulus image into ./${ROMULUS_DIR}..."
                     unzip -o romulus.zip -d ./${ROMULUS_DIR}
                     
@@ -268,7 +268,7 @@ pipeline {
                         echo "OpenBMC Web Service on port 2443 is NOT considered available after multiple attempts."
                         echo "QEMU Log (${QEMU_LOG}) for review:"
                         cat ${QEMU_LOG} || echo "Failed to cat ${QEMU_LOG}"
-                        // ... (rest of debugging commands from original Jenkinsfile)
+                        # ... (rest of debugging commands from original Jenkinsfile)
                         exit 1
                     fi
                 '''
@@ -371,12 +371,13 @@ pipeline {
                     echo "nmon started with PID ${NMON_PID}"
                     
                     echo "Starting Locust load test..."
-                    locust -f locustfile.py --headless -u 10 -r 2 -t 60s --host=https://localhost:2443 --csv=locust_report --html=locust_report.html
+                    locust -f locustfile.py --headless -u 10 -r 2 1 -t 60s --host=https://localhost:2443 --csv=locust_report --html=locust_report.html
                     
                     echo "Load test finished. Waiting for profiling tools to complete..."
                     # Wait for vmstat to finish (it runs for a fixed count)
                     if ps -p ${VMSTAT_PID} > /dev/null; then wait ${VMSTAT_PID} || echo "vmstat already finished"; fi
                     echo "vmstat finished."
+                    
                     # nmon runs in background and stops after -c count.
                     # Give it a few more seconds to ensure it finishes writing its file.
                     sleep 10 
@@ -390,6 +391,7 @@ pipeline {
                         fi
                     fi
                     echo "nmon should be finished."
+                    
                     # List nmon files generated
                     echo "NMON files generated in ./${NMON_REPORTS_DIR}:"
                     ls -l ./${NMON_REPORTS_DIR}
