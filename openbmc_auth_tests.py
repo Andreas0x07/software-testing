@@ -1,6 +1,6 @@
 import unittest
 import time
-from seleniumwire import webdriver # Changed from selenium to seleniumwire
+from seleniumwire import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
@@ -54,7 +54,7 @@ class OpenBMCAuthTests(unittest.TestCase):
             del self.driver.requests
         logger.info(f"Navigating to base URL: {self.base_url}")
         self.driver.get(self.base_url)
-        time.sleep(5)
+        time.sleep(5) # Allow time for page to load and initial requests to complete
         if hasattr(self.driver, 'requests'):
             logger.info(f"Captured {len(self.driver.requests)} requests after navigating to base_url ({self.base_url}):")
             if not self.driver.requests:
@@ -70,6 +70,7 @@ class OpenBMCAuthTests(unittest.TestCase):
         else:
             logger.warning("No 'requests' attribute to clear; this is unexpected if selenium-wire is active.")
 
+
     def tearDown(self):
         if hasattr(self.driver, 'requests') and self.driver.requests:
             logger.info(f"Clearing {len(self.driver.requests)} requests at end of {self._testMethodName}.")
@@ -82,6 +83,7 @@ class OpenBMCAuthTests(unittest.TestCase):
                 EC.presence_of_element_located((By.ID, "username"))
             )
             password_field = self.driver.find_element(By.ID, "password")
+            # More generic XPath for the login button
             login_button_xpath = "//button[contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'log in')] | //button[@type='submit'] | //input[@type='submit' and contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'log in')]"
             login_button = WebDriverWait(self.driver, 10).until(
                 EC.element_to_be_clickable((By.XPATH, login_button_xpath))
@@ -90,11 +92,14 @@ class OpenBMCAuthTests(unittest.TestCase):
             username_field.send_keys(username)
             password_field.clear()
             password_field.send_keys(password)
+
             logger.info("Clearing requests immediately before clicking login button...")
             if hasattr(self.driver, 'requests'):
                 del self.driver.requests
+
             login_button.click()
             logger.info("Clicked login button.")
+
         except TimeoutException:
             self.fail("Timeout waiting for login elements.")
         except NoSuchElementException:
@@ -103,33 +108,43 @@ class OpenBMCAuthTests(unittest.TestCase):
             self.fail(f"Error during login interaction: {e}")
 
     def test_invalid_credentials(self):
-        logger.info("Attempting invalid login with user: root, pass: invalidpassword")
+        logger.info(f"Attempting invalid login with user: {USERNAME}, pass: {INVALID_PASSWORD}")
         self._perform_login(USERNAME, INVALID_PASSWORD)
+
         try:
+            # Wait for the specific POST request to SessionService/Sessions
             login_request = self.driver.wait_for_request('/redfish/v1/SessionService/Sessions', timeout=10)
             self.assertIsNotNone(login_request, "Login request not captured.")
             self.assertIsNotNone(login_request.response, "Response not captured for login request.")
             logger.info(f"Captured invalid login POST request to {login_request.url} with status: {login_request.response.status_code}")
+
             self.assertEqual(login_request.response.status_code, 401,
                              f"Invalid login POST to {login_request.url} expected status 401, got {login_request.response.status_code}")
+
         except TimeoutException:
             self.fail("Timeout waiting for invalid login request to be captured by Selenium Wire.")
-        except Exception as e:
+        except Exception as e: # Catch any other assertion errors or issues
             self.fail(f"An unexpected error occurred while verifying invalid login: {e}")
 
+
     def test_successful_login(self):
-        logger.info("Attempting successful login with user: root, pass: 0penBmc")
+        logger.info(f"Attempting successful login with user: {USERNAME}, pass: {PASSWORD}")
         self._perform_login(USERNAME, PASSWORD)
+
         try:
+            # Wait for the specific POST request to SessionService/Sessions
             login_request = self.driver.wait_for_request('/redfish/v1/SessionService/Sessions', timeout=10)
             self.assertIsNotNone(login_request, "Login request not captured.")
             self.assertIsNotNone(login_request.response, "Response not captured for login request.")
             logger.info(f"Captured successful login POST request to {login_request.url} with status: {login_request.response.status_code}")
-            self.assertEqual(login_request.response.status_code, 201,
+
+
+            self.assertEqual(login_request.response.status_code, 201,  # 201 Created for successful session creation
                              f"Successful login POST to {login_request.url} expected status 201, got {login_request.response.status_code}")
 
+            # Check for redirection to dashboard or presence of a dashboard element
             WebDriverWait(self.driver, 20).until(
-                EC.url_contains("/#/dashboard")
+                EC.url_contains("/#/dashboard") # Check if URL contains dashboard path
             )
             self.assertIn("/#/dashboard", self.driver.current_url, "Not redirected to dashboard after successful login.")
             logger.info(f"Login appears successful. Current URL: {self.driver.current_url}")
@@ -145,20 +160,23 @@ if __name__ == '__main__':
     suite = unittest.TestSuite()
     suite.addTest(unittest.makeSuite(OpenBMCAuthTests))
 
+    # Define the output directory and ensure it exists
     output_dir = "selenium_reports"
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
     
+    # Define the full path for the report file
     report_file_path = os.path.join(output_dir, "selenium_webui_report.html")
 
     logger.info(f"Report will be generated at: {report_file_path}")
 
+    # Open the report file in write mode and run the tests
     with open(report_file_path, 'w') as report_file:
         runner = HtmlTestRunner.HTMLTestRunner(
             stream=report_file,
             title='OpenBMC WebUI Auth Test Report',
             description='Selenium tests for OpenBMC WebUI Authentication',
-            verbosity=2
+            verbosity=2 # Or 1 for less verbose
         )
         runner.run(suite)
     logger.info("Test execution finished.")
