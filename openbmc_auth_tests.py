@@ -1,6 +1,6 @@
 import unittest
 import time
-import json # Added to inspect JSON responses
+import json
 from seleniumwire import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
@@ -16,13 +16,13 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(level
 logger = logging.getLogger(__name__)
 
 selenium_wire_logger = logging.getLogger('seleniumwire')
-selenium_wire_logger.setLevel(logging.DEBUG) # Keep this for now, can be changed to INFO later
+selenium_wire_logger.setLevel(logging.INFO) # Changed to INFO from DEBUG for less verbose logs unless debugging
 
 OPENBMC_HOST = "https://localhost:2443"
 USERNAME = "root"
-PASSWORD = "0penBmc" # Correct OpenBMC password
+PASSWORD = "0penBmc"
 INVALID_PASSWORD = "invalidpassword"
-LOGIN_URL_PATH = "/login" # Actual login XHR path
+LOGIN_URL_PATH = "/login" # This is the XHR path your script targets for login requests
 
 class OpenBMCAuthTests(unittest.TestCase):
     driver = None
@@ -43,7 +43,7 @@ class OpenBMCAuthTests(unittest.TestCase):
         cls.driver = webdriver.Chrome(options=chrome_options, seleniumwire_options=sw_options)
         logger.info("WebDriver (Selenium Wire) initialized.")
         if hasattr(cls.driver, 'backend') and hasattr(cls.driver.backend, 'master'):
-             logger.info(f"Selenium Wire proxy seems to be running on: {cls.driver.backend.master.address}")
+            logger.info(f"Selenium Wire proxy seems to be running on: {cls.driver.backend.master.address}")
 
     @classmethod
     def tearDownClass(cls):
@@ -57,9 +57,9 @@ class OpenBMCAuthTests(unittest.TestCase):
         if hasattr(self.driver, 'requests'):
             del self.driver.requests
         self.driver.get(self.base_url)
-        WebDriverWait(self.driver, 20).until(EC.presence_of_element_located((By.ID, "username"))) # Wait for login page
+        WebDriverWait(self.driver, 20).until(EC.presence_of_element_located((By.ID, "username")))
         logger.info(f"Navigated to {self.base_url} and login page loaded.")
-        if hasattr(self.driver, 'requests'): # Clear requests after initial load
+        if hasattr(self.driver, 'requests'):
             del self.driver.requests
 
     def tearDown(self):
@@ -77,13 +77,13 @@ class OpenBMCAuthTests(unittest.TestCase):
             username_field.send_keys(username)
             password_field.clear()
             password_field.send_keys(password)
-            
-            if hasattr(self.driver, 'requests'): # Clear requests just before action
+
+            if hasattr(self.driver, 'requests'):
                 del self.driver.requests
-            
+
             login_button.click()
             logger.info(f"Clicked login button with user: {username}.")
-            time.sleep(1) # Brief pause for XHR to be reliably initiated
+            time.sleep(1) # Brief pause for XHR
         except Exception as e:
             logger.error(f"Error during login interaction: {e}", exc_info=True)
             self.fail(f"Error during login interaction: {e}")
@@ -101,31 +101,25 @@ class OpenBMCAuthTests(unittest.TestCase):
     def test_invalid_credentials(self):
         logger.info(f"Attempting invalid login with user: {USERNAME}, pass: {INVALID_PASSWORD}")
         self._perform_login(USERNAME, INVALID_PASSWORD)
-        
+
         try:
             logger.info(f"Waiting for S-Wire request to '{LOGIN_URL_PATH}' (timeout 15s)...")
             login_request = self.driver.wait_for_request(LOGIN_URL_PATH, timeout=15)
             self._log_s_wire_requests("invalid_credentials login action")
-            
+
             self.assertIsNotNone(login_request, f"Login request to {LOGIN_URL_PATH} not captured.")
             self.assertIsNotNone(login_request.response, "Response not captured for login request.")
-            
+
             logger.info(f"Captured POST to {login_request.url}, Status: {login_request.response.status_code}")
             self.assertEqual(login_request.method, "POST")
-            # As observed, POST /login returns 200. Failure is in the body or lack of redirect.
-            self.assertEqual(login_request.response.status_code, 200, 
+            self.assertEqual(login_request.response.status_code, 200,
                              f"Expected status 200 for {LOGIN_URL_PATH}, got {login_request.response.status_code}")
 
-            # Check that we are still on the login page (or not on dashboard)
-            time.sleep(2) # Allow for any immediate redirect attempt
+            time.sleep(2)
             current_url = self.driver.current_url
-            self.assertNotIn("/#/dashboard", current_url, 
+            self.assertNotIn("/#/dashboard", current_url,
                              "User was redirected to dashboard despite invalid credentials.")
             logger.info(f"Invalid login correctly did not redirect to dashboard. Current URL: {current_url}")
-
-            # Optional: Inspect JSON body for error message if structure is known
-            # response_body = json.loads(login_request.response.body.decode('utf-8'))
-            # self.assertIn("error", response_body, "Error message expected in response body for invalid login")
 
         except TimeoutException:
             self._log_s_wire_requests("invalid_credentials timeout")
@@ -151,8 +145,7 @@ class OpenBMCAuthTests(unittest.TestCase):
             self.assertEqual(login_request.method, "POST")
             self.assertEqual(login_request.response.status_code, 200,
                              f"Expected status 200 for {LOGIN_URL_PATH}, got {login_request.response.status_code}")
-            
-            # Primary validation: redirection to dashboard
+
             logger.info("Login XHR successful (HTTP 200). Waiting for URL to contain '/#/dashboard' (timeout 20s)...")
             WebDriverWait(self.driver, 20).until(EC.url_contains("/#/dashboard"))
             current_url = self.driver.current_url
@@ -169,37 +162,47 @@ class OpenBMCAuthTests(unittest.TestCase):
 
 if __name__ == '__main__':
     logger.info("Starting test execution from __main__...")
-    suite = unittest.TestSuite()
-    suite.addTest(unittest.makeSuite(OpenBMCAuthTests))
+
+    loader = unittest.TestLoader()
+    suite = loader.loadTestsFromTestCase(OpenBMCAuthTests)
 
     output_dir = "selenium_reports"
+    report_filename = "selenium_webui_report" # Name for the report file (without .html)
+    report_file_path = os.path.join(output_dir, f"{report_filename}.html")
+
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
-    report_file_path = os.path.join(output_dir, "selenium_webui_report.html")
-    logger.info(f"Report will be generated at: {report_file_path}")
-    
+    logger.info(f"Report will be generated in directory: {output_dir}, with name: {report_filename}.html")
+
     test_result = None
     try:
-        with open(report_file_path, 'w') as report_file:
-            runner = HtmlTestRunner.HTMLTestRunner(stream=report_file, title='OpenBMC WebUI Auth Test Report', verbosity=2)
-            test_result = runner.run(suite)
+        runner = HtmlTestRunner.HTMLTestRunner(
+            output=output_dir,
+            report_name=report_filename,
+            report_title='OpenBMC WebUI Auth Test Report',
+            verbosity=2,
+            add_timestamp=False # Ensures a consistent filename
+        )
+        test_result = runner.run(suite)
     except Exception as e:
-        logger.error(f"CRITICAL: Exception during HtmlTestRunner: {e}", exc_info=True)
+        logger.error(f"CRITICAL: Exception during HtmlTestRunner execution: {e}", exc_info=True)
     finally:
         logger.info("Test execution block finished (finally).")
         if os.path.exists(report_file_path) and os.path.getsize(report_file_path) > 0:
             logger.info(f"SUCCESS: Report file was created at {report_file_path}. Size: {os.path.getsize(report_file_path)} bytes.")
         else:
             logger.error(f"FAILURE: Report file NOT found or is empty at {report_file_path}.")
+            # Create a placeholder if report generation failed catastrophically
             if not os.path.exists(output_dir): os.makedirs(output_dir)
-            with open(report_file_path, 'w') as f: f.write("<html><body><h1>Report Generation Failed</h1></body></html>")
+            with open(report_file_path, 'w') as f:
+                f.write("<html><body><h1>Report Generation Failed or No Tests Were Run</h1></body></html>")
             logger.info(f"Created a placeholder report file at {report_file_path}.")
 
     if test_result and not test_result.wasSuccessful():
         logger.error("One or more tests FAILED. Exiting with status 1.")
         sys.exit(1)
-    elif not test_result: # If runner itself failed
-        logger.error("Test result not obtained. Exiting with status 2.")
+    elif not test_result: # If runner itself failed or no result object
+        logger.error("Test result object not obtained (runner might have failed). Exiting with status 2.")
         sys.exit(2)
     else: # All tests passed
         logger.info("All tests passed. Exiting with status 0.")
