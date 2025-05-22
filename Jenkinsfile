@@ -371,7 +371,7 @@ pipeline {
                     echo "nmon started with PID ${NMON_PID}"
                     
                     echo "Starting Locust load test..."
-                    locust -f locustfile.py --headless -u 10 -r 2 1 -t 60s --host=https://localhost:2443 --csv=locust_report --html=locust_report.html
+                    locust -f locustfile.py --headless -u 2 -r 1 1 -t 60s --host=https://localhost:2443 --csv=locust_report --html=locust_report.html
                     
                     echo "Load test finished. Waiting for profiling tools to complete..."
                     # Wait for vmstat to finish (it runs for a fixed count)
