@@ -7,13 +7,17 @@ pipeline {
         OPENBMC_IMAGE_URL = 'https://jenkins.openbmc.org/job/ci-openbmc/lastSuccessfulBuild/distro=ubuntu,label=docker-builder,target=romulus/artifact/openbmc/build/tmp/deploy/images/romulus/*zip*/romulus.zip'
         ROMULUS_DIR = 'romulus_image_files'
         
-        // New profiling environment variables
+        // Profiling environment variables
         VMSTAT_LOG = 'vmstat.log'
         NMON_OUT_DIR = '.' // nmon will create files like nmon_YYYYMMDD-HHMM.nmon in this dir
         PERF_DATA = 'perf.data'
         VMSTAT_PID_FILE = 'vmstat.pid'
         NMON_PID_FILE = 'nmon.pid'
         PERF_PID_FILE = 'perf.pid'
+
+        // New logs for specific QEMU metrics
+        QEMU_MEMORY_LOG = 'qemu_memory_usage.log'
+        PERF_STAT_LOG = 'perf_stat_output.log'
     }
 
     stages {
@@ -54,7 +58,7 @@ pipeline {
                     echo "Installing/Verifying Python packages..."
                     pip install --upgrade pip
                     pip install pytest requests selenium selenium-wire locust psutil html-testRunner blinker==1.7.0
-                         
+                          
                     echo "Python virtual environment setup complete."
                 '''
             }
@@ -181,26 +185,27 @@ pipeline {
                     echo "vmstat started with PID $(cat ${VMSTAT_PID_FILE}), logging to ${VMSTAT_LOG}"
 
                     # Start nmon
-                    # -F: write to file with timestamp, -s: interval in seconds, -c: count
-                    # nmon will create a file named like nmon_YYYYMMDD-HHMM.nmon in the current directory
                     nohup nmon -F -s 1 -c 9999999 > /dev/null 2>&1 &
                     echo $! > ${NMON_PID_FILE}
                     echo "nmon started with PID $(cat ${NMON_PID_FILE}), logging to files like nmon_YYYYMMDD-HHMM.nmon"
 
                     # Start perf record for QEMU PID
-                    # -F 99: frequency of 99 events per second
-                    # -a: monitor all CPUs
-                    # -g: record callgraphs
-                    # -o ${PERF_DATA}: output file
-                    # -- pid $(cat ${QEMU_PID_FILE}): target specific PID
                     nohup sudo perf record -F 99 -a -g -o ${PERF_DATA} -- pid $(cat ${QEMU_PID_FILE}) > /dev/null 2>&1 &
-                    # The `perf record` command itself might be a parent process, with the actual recording done by a child.
-                    # We store the PID of the initial 'nohup' process, and will later attempt to kill the child.
                     echo $! > ${PERF_PID_FILE}
                     echo "perf record started with PID $(cat ${PERF_PID_FILE}), logging to ${PERF_DATA}"
 
                     echo "Waiting for OpenBMC to boot (180 seconds initial wait)..." 
                     sleep 180
+                    
+                    echo "Logging QEMU memory usage after boot and before IPMI check..."
+                    QEMU_PID_TO_LOG=$(cat ${QEMU_PID_FILE})
+                    if [ -n "$QEMU_PID_TO_LOG" ] && ps -p $QEMU_PID_TO_LOG > /dev/null; then
+                        echo "Timestamp: $(date --iso-8601=seconds) - After QEMU Boot, Before IPMI Check" >> ${QEMU_MEMORY_LOG}
+                        ps -p $QEMU_PID_TO_LOG -o pid,rss,vsz,sz,user,%cpu,%mem,command >> ${QEMU_MEMORY_LOG}
+                        echo "" >> ${QEMU_MEMORY_LOG}
+                    else
+                        echo "Timestamp: $(date --iso-8601=seconds) - QEMU PID $QEMU_PID_TO_LOG not found for memory logging (after boot)" >> ${QEMU_MEMORY_LOG}
+                    fi
                     
                     echo "Verifying OpenBMC IPMI responsiveness with retries..."
                     RETRY_COUNT=0
@@ -244,6 +249,16 @@ pipeline {
         stage('Verify Web Service Availability') {
             steps {
                 sh '''
+                    echo "Logging QEMU memory usage before Web Service check..."
+                    QEMU_PID_TO_LOG=$(cat ${QEMU_PID_FILE})
+                    if [ -n "$QEMU_PID_TO_LOG" ] && ps -p $QEMU_PID_TO_LOG > /dev/null; then
+                        echo "Timestamp: $(date --iso-8601=seconds) - Before Web Service Check" >> ${QEMU_MEMORY_LOG}
+                        ps -p $QEMU_PID_TO_LOG -o pid,rss,vsz,sz,user,%cpu,%mem,command >> ${QEMU_MEMORY_LOG}
+                        echo "" >> ${QEMU_MEMORY_LOG}
+                    else
+                        echo "Timestamp: $(date --iso-8601=seconds) - QEMU PID $QEMU_PID_TO_LOG not found for memory logging (before web check)" >> ${QEMU_MEMORY_LOG}
+                    fi
+
                     echo "Waiting an additional 90 seconds for web services (Redfish) to fully initialize..." 
                     sleep 90
 
@@ -337,19 +352,52 @@ pipeline {
             }
         }
 
-        stage('Run Load Testing (Locust)') {
+        stage('Run Load Testing (Locust) and Perf Stat') {
             steps {
                 sh '''
+                    echo "Logging QEMU memory usage before Load Test..."
+                    QEMU_PID_TO_LOG=$(cat ${QEMU_PID_FILE})
+                    if [ -n "$QEMU_PID_TO_LOG" ] && ps -p $QEMU_PID_TO_LOG > /dev/null; then
+                        echo "Timestamp: $(date --iso-8601=seconds) - Before Load Test" >> ${QEMU_MEMORY_LOG}
+                        ps -p $QEMU_PID_TO_LOG -o pid,rss,vsz,sz,user,%cpu,%mem,command >> ${QEMU_MEMORY_LOG}
+                        echo "" >> ${QEMU_MEMORY_LOG}
+                    else
+                        echo "Timestamp: $(date --iso-8601=seconds) - QEMU PID $QEMU_PID_TO_LOG not found for memory logging (before load test)" >> ${QEMU_MEMORY_LOG}
+                    fi
+
                     echo "Waiting for 30 seconds before starting Locust to allow OpenBMC to settle..."
                     sleep 30
+                    
                     . ${PYTHON_VENV}/bin/activate
                     echo "Starting Locust load test..."
+                    
+                    # Start perf stat in the background to monitor QEMU during the locust test
+                    # It will run for approximately the duration of the locust test (60s + a bit of buffer)
+                    echo "Starting perf stat for QEMU PID $(cat ${QEMU_PID_FILE}) for 70 seconds..."
+                    nohup sudo perf stat -e cycles,instructions,cache-misses -p $(cat ${QEMU_PID_FILE}) -o ${PERF_STAT_LOG} sleep 70 &
+                    PERF_STAT_BG_PID=$!
+                    echo "Perf stat running in background with PID ${PERF_STAT_BG_PID}, logging to ${PERF_STAT_LOG}"
+
                     locust -f locustfile.py --headless -u 2 -r 1 -t 60s --host=https://localhost:2443 --csv=locust_report --html=locust_report.html
+                    
+                    echo "Waiting for perf stat to finish..."
+                    # Wait for the specific perf stat process or give it a few seconds to complete writing its output
+                    # If 'wait $PERF_STAT_BG_PID' is problematic in nohup/Jenkins agent, a fixed sleep might be more robust.
+                    sleep 5 # Ensure perf stat has time to write output after its 'sleep 70' finishes
+
+                    echo "Logging QEMU memory usage after Load Test..."
+                    if [ -n "$QEMU_PID_TO_LOG" ] && ps -p $QEMU_PID_TO_LOG > /dev/null; then
+                        echo "Timestamp: $(date --iso-8601=seconds) - After Load Test" >> ${QEMU_MEMORY_LOG}
+                        ps -p $QEMU_PID_TO_LOG -o pid,rss,vsz,sz,user,%cpu,%mem,command >> ${QEMU_MEMORY_LOG}
+                        echo "" >> ${QEMU_MEMORY_LOG}
+                    else
+                        echo "Timestamp: $(date --iso-8601=seconds) - QEMU PID $QEMU_PID_TO_LOG not found for memory logging (after load test)" >> ${QEMU_MEMORY_LOG}
+                    fi
                 '''
             }
             post {
                 always {
-                    archiveArtifacts artifacts: 'locust_report_stats.csv, locust_report_stats_history.csv, locust_report.html, qemu_openbmc.log', fingerprint: true, allowEmptyArchive: true
+                    archiveArtifacts artifacts: "locust_report_stats.csv, locust_report_stats_history.csv, locust_report.html, qemu_openbmc.log, ${PERF_STAT_LOG}", fingerprint: true, allowEmptyArchive: true
                     publishHTML([
                         allowMissing: true, 
                         alwaysLinkToLastBuild: false, 
@@ -394,17 +442,14 @@ pipeline {
                     if [ -f ${PERF_PID_FILE} ]; then
                         PERF_PARENT_PID=$(cat ${PERF_PID_FILE})
                         echo "Attempting to stop perf record (parent PID: ${PERF_PARENT_PID})..."
-                        # Find potential child perf processes and kill them
-                        # Use || true to prevent script failure if no child processes are found
                         PERF_CHILD_PIDS=$(pgrep -P ${PERF_PARENT_PID} perf || true)
                         if [ -n "${PERF_CHILD_PIDS}" ]; then
                             echo "Killing perf child processes: ${PERF_CHILD_PIDS}"
                             sudo kill -SIGINT ${PERF_CHILD_PIDS} || echo "Failed to kill perf child PIDs."
-                            sleep 2 # Give time for data flushing
+                            sleep 2 
                         else
                             echo "No active perf child processes found for parent PID ${PERF_PARENT_PID}."
                         fi
-                        # Kill the parent perf process too if it's still running
                         if ps -p ${PERF_PARENT_PID} > /dev/null; then
                             sudo kill -SIGINT ${PERF_PARENT_PID} || echo "Failed to kill perf parent PID ${PERF_PARENT_PID}."
                         else
@@ -418,6 +463,13 @@ pipeline {
                         echo "Changing ownership of ${PERF_DATA} to jenkins:jenkins..."
                         sudo chown jenkins:jenkins "${PERF_DATA}" || echo "Failed to change ownership of ${PERF_DATA}."
                     fi
+                    
+                    # Change ownership of perf_stat.log if it exists
+                    if [ -f "${PERF_STAT_LOG}" ]; then
+                        echo "Changing ownership of ${PERF_STAT_LOG} to jenkins:jenkins..."
+                        sudo chown jenkins:jenkins "${PERF_STAT_LOG}" || echo "Failed to change ownership of ${PERF_STAT_LOG}."
+                    fi
+
 
                     # Existing QEMU cleanup logic
                     if [ -f ${QEMU_PID_FILE} ]; then
@@ -427,12 +479,12 @@ pipeline {
                             if ps -p ${QEMU_PID_TO_KILL} > /dev/null; then
                                 sudo kill -9 ${QEMU_PID_TO_KILL} || echo "Failed to send kill -9 to QEMU PID ${QEMU_PID_TO_KILL}."
                                 echo "Sent kill -9 to QEMU PID ${QEMU_PID_TO_KILL}. Waiting for termination..."
-                                sleep 2 # Give it a moment to terminate
+                                sleep 2 
 
                                 if ps -p ${QEMU_PID_TO_KILL} > /dev/null; then
                                     echo "WARNING: QEMU PID ${QEMU_PID_TO_KILL} still found after kill -9. Attempting pkill..."
                                     sudo pkill -9 -f "qemu-system-arm -M romulus-bmc" || echo "Fallback pkill attempt failed or QEMU already stopped."
-                                    sleep 2 # Another short sleep after pkill
+                                    sleep 2 
                                     if ps -p ${QEMU_PID_TO_KILL} > /dev/null; then
                                         echo "ERROR: QEMU PID ${QEMU_PID_TO_KILL} still active after all kill attempts."
                                     else
@@ -446,16 +498,19 @@ pipeline {
                             fi
                             rm -f ${QEMU_PID_FILE} 
                         else
-                            echo "QEMU PID file (${QEMU_PID_FILE}) not found. Searching by process name..."
+                            echo "QEMU PID file (${QEMU_PID_FILE}) was not found. Searching by process name..." # This case should ideally not happen if QEMU_PID_FILE is always written
                             sudo pkill -9 -f "qemu-system-arm -M romulus-bmc" || echo "pkill attempt: QEMU process with 'qemu-system-arm -M romulus-bmc' not found or already stopped."
                         fi
+                    else # QEMU_PID_FILE does not exist
+                         echo "QEMU_PID_FILE (${QEMU_PID_FILE}) not found. Attempting broad pkill..."
+                         sudo pkill -9 -f "qemu-system-arm -M romulus-bmc" || echo "Broad pkill attempt: QEMU process not found or already stopped."
                     fi
                     echo "Cleanup attempt finished."
                     echo "Final check for running QEMU processes:"
                     ps aux | grep qemu-system-arm | grep -v grep || echo "No qemu-system-arm processes found."
                 '''
                 // Archive the new profiling artifacts
-                archiveArtifacts artifacts: "${VMSTAT_LOG}, ${NMON_OUT_DIR}/nmon_*.nmon, ${PERF_DATA}", allowEmptyArchive: true, fingerprint: true
+                archiveArtifacts artifacts: "${VMSTAT_LOG}, ${NMON_OUT_DIR}/nmon_*.nmon, ${PERF_DATA}, ${QEMU_MEMORY_LOG}, ${PERF_STAT_LOG}", allowEmptyArchive: true, fingerprint: true
             }
         }
     }
