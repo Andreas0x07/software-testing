@@ -486,6 +486,7 @@ pipeline {
                     
                     rm -f ${QEMU_PID_FILE}
                     echo "Cleanup attempt finished."
+                    
                     echo "Final check for running QEMU/Perf processes:"
                     ps aux | grep -E "qemu-system-arm|perf stat" | grep -v grep || echo "No relevant qemu-system-arm or perf stat processes found."
                 '''
